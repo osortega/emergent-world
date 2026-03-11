@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Emergent World</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d;
+  --text: #c9d1d9; --text2: #8b949e; --text3: #484f58;
+  --amber: #d4a04a; --green: #3fb950; --red: #f85149;
+  --blue: #58a6ff; --purple: #bc8cff; --orange: #d18616;
+  --border: #30363d;
+}
+body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; min-height: 100vh; }
+a { color: var(--blue); cursor: pointer; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Top Bar */
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-wrap: wrap; gap: 8px; }
+.topbar .clock { display: flex; align-items: center; gap: 12px; font-size: 15px; }
+.topbar .clock .season-emoji { font-size: 22px; }
+.topbar .clock .tick { color: var(--amber); font-weight: 600; }
+.topbar .pop { color: var(--text2); font-size: 14px; }
+.topbar .pop .alive { color: var(--green); font-weight: 600; }
+.topbar .pop .dead { color: var(--red); }
+.controls { display: flex; gap: 8px; align-items: center; }
+.controls button { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.controls button:hover { background: var(--border); }
+.controls button.active { background: var(--green); color: #000; border-color: var(--green); }
+.controls button.tick-btn { background: var(--amber); color: #000; border-color: var(--amber); }
+.controls button.tick-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.status-pill { font-size: 12px; color: var(--text2); padding: 4px 10px; border-radius: 12px; background: var(--bg3); }
+.status-pill.running { color: var(--green); }
+.status-pill .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 4px; background: var(--text3); }
+.status-pill.running .dot { background: var(--green); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* Main layout */
+.main { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1px; background: var(--border); min-height: calc(100vh - 52px); }
+.panel { background: var(--bg); padding: 16px; overflow-y: auto; max-height: calc(100vh - 52px); }
+.panel h2 { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+
+/* Region cards */
+.region-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; transition: border-color 0.3s; cursor: pointer; }
+.region-card:hover { border-color: var(--amber); }
+.region-card.active { border-color: var(--amber); box-shadow: 0 0 12px rgba(212,160,74,0.15); }
+.region-card .name { font-weight: 600; font-size: 15px; margin-bottom: 4px; }
+.region-card .terrain { font-size: 12px; color: var(--text2); margin-bottom: 8px; }
+.region-card .features { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.region-card .feat { font-size: 11px; background: var(--bg3); padding: 2px 8px; border-radius: 10px; color: var(--text2); }
+.region-card .feat-bar { height: 3px; background: var(--bg3); border-radius: 2px; overflow: hidden; margin-top: 2px; }
+.region-card .feat-bar .fill { height: 100%; transition: width 0.5s; border-radius: 2px; }
+.region-card .citizen-pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.citizen-pill { font-size: 11px; padding: 2px 8px; border-radius: 10px; cursor: pointer; transition: all 0.2s; }
+.citizen-pill:hover { filter: brightness(1.3); }
+.citizen-pill.healthy { background: #1b3a25; color: var(--green); }
+.citizen-pill.hurt { background: #3a2f1b; color: var(--orange); }
+.citizen-pill.critical { background: #3a1b1b; color: var(--red); }
+.citizen-pill.dead { background: var(--bg3); color: var(--text3); text-decoration: line-through; }
+
+/* Event log */
+.event { padding: 8px 12px; border-left: 3px solid var(--border); margin-bottom: 6px; font-size: 13px; background: var(--bg2); border-radius: 0 6px 6px 0; animation: fadeIn 0.3s; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+.event .tick-label { font-size: 11px; color: var(--text3); margin-bottom: 2px; }
+.event.gather { border-color: var(--green); }
+.event.interact { border-color: var(--blue); }
+.event.fight, .event.death { border-color: var(--red); }
+.event.move { border-color: var(--purple); }
+.event.make { border-color: var(--orange); }
+.event.explore { border-color: var(--amber); }
+.event.rest, .event.nothing { border-color: var(--text3); }
+.event.starvation { border-color: var(--red); background: #1c0e0e; }
+.event .citizen-link { color: var(--amber); cursor: pointer; }
+.event .citizen-link:hover { text-decoration: underline; }
+
+/* Citizen inspector */
+.inspector-empty { color: var(--text3); text-align: center; padding: 40px 20px; font-size: 14px; }
+.citizen-detail .name { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+.citizen-detail .desc { color: var(--text2); font-size: 13px; margin-bottom: 12px; font-style: italic; }
+.citizen-detail .status-badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-bottom: 12px; }
+.citizen-detail .status-badge.alive { background: #1b3a25; color: var(--green); }
+.citizen-detail .status-badge.dead { background: #3a1b1b; color: var(--red); }
+.health-bar-container { margin-bottom: 12px; }
+.health-bar-container label { font-size: 12px; color: var(--text2); }
+.health-bar { height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+.health-bar .fill { height: 100%; border-radius: 4px; transition: width 0.5s, background-color 0.5s; }
+.section-label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin: 12px 0 6px; }
+.skill-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 13px; }
+.skill-row .skill-name { width: 80px; color: var(--text2); }
+.skill-dots { display: flex; gap: 3px; }
+.skill-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bg3); }
+.skill-dot.filled { background: var(--amber); }
+.inv-item { font-size: 13px; padding: 4px 0; color: var(--text); border-bottom: 1px solid var(--border); }
+.memory-item { font-size: 12px; color: var(--text2); padding: 4px 0; border-bottom: 1px solid var(--border); }
+.memory-item:last-child { border: none; }
+.memory-item.latest { color: var(--amber); }
+
+/* Behind the scenes panel */
+.bts-toggle { position: fixed; bottom: 20px; right: 20px; z-index: 100; background: var(--purple); color: #000; border: none; padding: 10px 18px; border-radius: 20px; cursor: pointer; font-size: 13px; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+.bts-toggle:hover { filter: brightness(1.2); }
+.bts-panel { position: fixed; top: 0; right: -600px; width: 600px; max-width: 100vw; height: 100vh; background: var(--bg2); border-left: 1px solid var(--border); z-index: 200; transition: right 0.3s; overflow-y: auto; }
+.bts-panel.open { right: 0; }
+.bts-header { display: flex; justify-content: space-between; align-items: center; padding: 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg2); z-index: 1; }
+.bts-header h2 { margin: 0; border: none; padding: 0; }
+.bts-close { background: none; border: none; color: var(--text2); font-size: 20px; cursor: pointer; }
+.bts-tick-select { background: var(--bg3); border: 1px solid var(--border); color: var(--text); padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+.thought-block { border-bottom: 1px solid var(--border); }
+.thought-header { padding: 12px 16px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+.thought-header:hover { background: var(--bg3); }
+.thought-header .name { font-weight: 600; color: var(--amber); }
+.thought-header .action-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--bg3); color: var(--text2); }
+.thought-body { padding: 0 16px 16px; display: none; }
+.thought-body.open { display: block; }
+.thought-section { margin-bottom: 12px; }
+.thought-section-label { font-size: 11px; color: var(--purple); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.thought-content { background: var(--bg); padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text2); max-height: 300px; overflow-y: auto; }
+.thought-content.thinking { color: var(--purple); font-style: italic; }
+.thought-content.action { color: var(--green); }
+
+.last-updated { font-size: 11px; color: var(--text3); text-align: center; padding: 8px; }
+
+@media (max-width: 800px) {
+  .main { grid-template-columns: 1fr; }
+  .panel { max-height: none; }
+  .bts-panel { width: 100vw; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="clock">
+    <span class="season-emoji" id="seasonEmoji">🌱</span>
+    <span>Tick <span class="tick" id="tickNum">0</span></span>
+    <span id="seasonName">Spring</span>
+    <span>Year <span id="yearNum">1</span></span>
+  </div>
+  <div class="pop">
+    Population: <span class="alive" id="aliveCount">0</span> alive
+    <span class="dead" id="deadInfo"></span>
+  </div>
+  <div class="controls">
+    <button class="tick-btn" id="manualTickBtn" onclick="manualTick()">⚡ Run Tick</button>
+    <button id="startBtn" onclick="toggleAuto()">▶ Auto</button>
+    <span class="status-pill" id="statusPill"><span class="dot"></span>Stopped</span>
+  </div>
+</div>
+
+<div class="main">
+  <div class="panel" id="regionsPanel">
+    <h2>🌍 Regions</h2>
+    <div id="regionsContainer"></div>
+  </div>
+  <div class="panel" id="eventsPanel">
+    <h2>📜 Events</h2>
+    <div id="eventsContainer">
+      <div class="inspector-empty">No events yet. Run a tick to begin.</div>
+    </div>
+  </div>
+  <div class="panel" id="inspectorPanel">
+    <h2>🔍 Inspector</h2>
+    <div id="inspectorContainer">
+      <div class="inspector-empty">Click a being to inspect them.</div>
+    </div>
+  </div>
+</div>
+
+<button class="bts-toggle" onclick="toggleBTS()">🧠 Behind the Scenes</button>
+
+<div class="bts-panel" id="btsPanel">
+  <div class="bts-header">
+    <h2>🧠 Behind the Scenes</h2>
+    <div>
+      <select class="bts-tick-select" id="btsTick" onchange="loadThoughts(this.value)"></select>
+      <button class="bts-close" onclick="toggleBTS()">✕</button>
+    </div>
+  </div>
+  <div id="btsContainer">
+    <div class="inspector-empty">No thoughts recorded yet.</div>
+  </div>
+</div>
+
+<div class="last-updated">Last updated: <span id="lastUpdated">never</span></div>
+
+<script>
+const SEASON_EMOJI = { spring: '🌱', summer: '☀️', autumn: '🍂', winter: '❄️' };
+const SEASON_NAME = { spring: 'Spring', summer: 'Summer', autumn: 'Autumn', winter: 'Winter' };
+const EVENT_COLORS = { gather: 'gather', interact: 'interact', fight: 'fight', death: 'death', move: 'move', make: 'make', explore: 'explore', rest: 'rest', nothing: 'nothing', starvation: 'starvation', gather_failed: 'gather' };
+
+let state = null;
+let history = [];
+let selectedCitizen = null;
+let autoRunning = false;
+let regionFilter = null;
+
+// Fetch state
+async function fetchState() {
+  try {
+    const res = await fetch('/api/state');
+    state = await res.json();
+    renderState();
+  } catch (e) { console.error('fetch state:', e); }
+}
+
+async function fetchHistory() {
+  try {
+    const res = await fetch('/api/history');
+    history = await res.json();
+    renderEvents();
+  } catch (e) { console.error('fetch history:', e); }
+}
+
+async function fetchStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+    autoRunning = s.running;
+    const pill = document.getElementById('statusPill');
+    const btn = document.getElementById('startBtn');
+    if (s.running) {
+      pill.className = 'status-pill running';
+      pill.innerHTML = `<span class="dot"></span>Running (next in ${s.next_tick_in_seconds}s)`;
+      btn.textContent = '⏸ Stop';
+      btn.classList.add('active');
+    } else {
+      pill.className = 'status-pill';
+      pill.innerHTML = '<span class="dot"></span>Stopped';
+      btn.textContent = '▶ Auto';
+      btn.classList.remove('active');
+    }
+  } catch (e) {}
+}
+
+function renderState() {
+  if (!state) return;
+  const { clock, regions, citizens } = state;
+
+  // Top bar
+  document.getElementById('tickNum').textContent = clock.tick;
+  document.getElementById('seasonEmoji').textContent = SEASON_EMOJI[clock.season] || '🌱';
+  document.getElementById('seasonName').textContent = SEASON_NAME[clock.season] || clock.season;
+  document.getElementById('yearNum').textContent = clock.year;
+
+  const alive = citizens.filter(c => c.alive).length;
+  const dead = citizens.length - alive;
+  document.getElementById('aliveCount').textContent = alive;
+  document.getElementById('deadInfo').textContent = dead > 0 ? ` (${dead} dead)` : '';
+
+  // Regions
+  const container = document.getElementById('regionsContainer');
+  container.innerHTML = '';
+  for (const [id, region] of Object.entries(regions)) {
+    const regionCitizens = citizens.filter(c => c.region === id);
+    const card = document.createElement('div');
+    card.className = `region-card${regionFilter === id ? ' active' : ''}`;
+    card.onclick = () => { regionFilter = regionFilter === id ? null : id; renderState(); renderEvents(); };
+
+    let featHTML = '';
+    for (const [resource, feat] of Object.entries(region.features || {})) {
+      const pct = Math.min(100, (feat.amount / 30) * 100);
+      const color = pct > 60 ? 'var(--green)' : pct > 30 ? 'var(--orange)' : 'var(--red)';
+      featHTML += `<div class="feat">${resource}: ${Math.round(feat.amount)}<div class="feat-bar"><div class="fill" style="width:${pct}%;background:${color}"></div></div></div>`;
+    }
+
+    let pillsHTML = '';
+    for (const c of regionCitizens) {
+      const cls = !c.alive ? 'dead' : c.health <= 3 ? 'critical' : c.health <= 6 ? 'hurt' : 'healthy';
+      pillsHTML += `<span class="citizen-pill ${cls}" onclick="event.stopPropagation();selectCitizen('${c.id}')">${c.name}</span>`;
+    }
+
+    card.innerHTML = `
+      <div class="name">${region.name}</div>
+      <div class="terrain">${region.terrain} · ${region.weather || 'clear'}</div>
+      <div class="features">${featHTML}</div>
+      <div class="citizen-pills">${pillsHTML}</div>
+    `;
+    container.appendChild(card);
+  }
+
+  // Inspector
+  if (selectedCitizen) {
+    const c = citizens.find(ci => ci.id === selectedCitizen);
+    if (c) renderInspector(c);
+  }
+
+  document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
+}
+
+function renderInspector(c) {
+  const container = document.getElementById('inspectorContainer');
+  const hpPct = (c.health / (c.max_health || 10)) * 100;
+  const hpColor = hpPct > 60 ? 'var(--green)' : hpPct > 30 ? 'var(--orange)' : 'var(--red)';
+
+  let skillsHTML = '';
+  for (const [skill, level] of Object.entries(c.skills || {})) {
+    let dots = '';
+    for (let i = 1; i <= 5; i++) dots += `<div class="skill-dot${i <= level ? ' filled' : ''}"></div>`;
+    skillsHTML += `<div class="skill-row"><span class="skill-name">${skill}</span><div class="skill-dots">${dots}</div></div>`;
+  }
+
+  let invHTML = '';
+  const items = Object.entries(c.inventory || {}).filter(([, v]) => v > 0);
+  if (items.length === 0) invHTML = '<div class="inv-item" style="color:var(--text3)">Nothing</div>';
+  else items.forEach(([item, count]) => { invHTML += `<div class="inv-item">${item}: ${count}</div>`; });
+
+  let memHTML = '';
+  const mems = (c.memory || []).slice().reverse();
+  if (mems.length === 0) memHTML = '<div class="memory-item" style="color:var(--text3)">No memories yet</div>';
+  else mems.forEach((m, i) => { memHTML += `<div class="memory-item${i === 0 ? ' latest' : ''}">${m}</div>`; });
+
+  container.innerHTML = `
+    <div class="citizen-detail">
+      <div class="name">${c.name}</div>
+      <div class="desc">${c.physical_description}</div>
+      <span class="status-badge ${c.alive ? 'alive' : 'dead'}">${c.alive ? '● Alive' : '✕ Dead'}</span>
+      <div class="health-bar-container">
+        <label>Health: ${c.health}/${c.max_health || 10} · Food: ${c.food || 0}</label>
+        <div class="health-bar"><div class="fill" style="width:${hpPct}%;background:${hpColor}"></div></div>
+      </div>
+      <div class="section-label">Region</div>
+      <div style="font-size:13px;color:var(--text2)">${c.region}</div>
+      <div class="section-label">Traits</div>
+      ${skillsHTML}
+      <div class="section-label">Inventory</div>
+      ${invHTML}
+      <div class="section-label">Memories</div>
+      ${memHTML}
+    </div>
+  `;
+}
+
+function renderEvents() {
+  const container = document.getElementById('eventsContainer');
+  if (history.length === 0) {
+    container.innerHTML = '<div class="inspector-empty">No events yet. Run a tick to begin.</div>';
+    return;
+  }
+
+  let html = '';
+  const reversed = [...history].reverse();
+  for (const tick of reversed) {
+    const events = (tick.events || []).filter(e => !regionFilter || e.region === regionFilter);
+    for (const e of events) {
+      const cls = EVENT_COLORS[e.type] || 'nothing';
+      const citizenLink = e.citizenName ? `<span class="citizen-link" onclick="selectCitizen('${e.citizen}')">${e.citizenName}</span>` : '';
+      html += `<div class="event ${cls}">
+        <div class="tick-label">Tick ${tick.tick} · ${tick.season}</div>
+        ${citizenLink}: ${e.description || e.type}
+      </div>`;
+    }
+  }
+  container.innerHTML = html || '<div class="inspector-empty">No events for this filter.</div>';
+}
+
+function selectCitizen(id) {
+  selectedCitizen = selectedCitizen === id ? null : id;
+  if (selectedCitizen && state) {
+    const c = state.citizens.find(ci => ci.id === selectedCitizen);
+    if (c) renderInspector(c);
+    else document.getElementById('inspectorContainer').innerHTML = '<div class="inspector-empty">Citizen not found.</div>';
+  } else {
+    document.getElementById('inspectorContainer').innerHTML = '<div class="inspector-empty">Click a being to inspect them.</div>';
+  }
+}
+
+async function manualTick() {
+  const btn = document.getElementById('manualTickBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running...';
+  try {
+    await fetch('/api/tick', { method: 'POST' });
+    await fetchState();
+    await fetchHistory();
+    await loadThoughtTicks();
+  } catch (e) { console.error('tick error:', e); }
+  btn.disabled = false;
+  btn.textContent = '⚡ Run Tick';
+}
+
+async function toggleAuto() {
+  if (autoRunning) {
+    await fetch('/api/stop', { method: 'POST' });
+  } else {
+    await fetch('/api/start', { method: 'POST' });
+  }
+  fetchStatus();
+}
+
+// Behind the scenes
+function toggleBTS() {
+  document.getElementById('btsPanel').classList.toggle('open');
+}
+
+async function loadThoughtTicks() {
+  try {
+    const res = await fetch('/api/thoughts/ticks');
+    const ticks = await res.json();
+    const sel = document.getElementById('btsTick');
+    sel.innerHTML = ticks.map(t => `<option value="${t}">Tick ${t}</option>`).join('');
+    if (ticks.length > 0) loadThoughts(ticks[0]);
+  } catch (e) {}
+}
+
+async function loadThoughts(tick) {
+  try {
+    const res = await fetch(`/api/thoughts?tick=${tick}`);
+    const thoughts = await res.json();
+    const container = document.getElementById('btsContainer');
+
+    if (!thoughts || Object.keys(thoughts).length === 0) {
+      container.innerHTML = '<div class="inspector-empty">No thoughts for this tick.</div>';
+      return;
+    }
+
+    let html = '';
+    for (const [id, t] of Object.entries(thoughts)) {
+      html += `
+        <div class="thought-block">
+          <div class="thought-header" onclick="this.nextElementSibling.classList.toggle('open')">
+            <span class="name">${t.citizenName || id}</span>
+            <span class="action-badge">${t.parsed?.action_type || '?'}</span>
+          </div>
+          <div class="thought-body">
+            <div class="thought-section">
+              <div class="thought-section-label">What they perceived (prompt)</div>
+              <div class="thought-content">${escapeHTML(t.prompt || 'N/A')}</div>
+            </div>
+            <div class="thought-section">
+              <div class="thought-section-label">Their inner experience (thinking)</div>
+              <div class="thought-content thinking">${escapeHTML(t.parsed?.thinking || 'N/A')}</div>
+            </div>
+            <div class="thought-section">
+              <div class="thought-section-label">What they did (action)</div>
+              <div class="thought-content action">${escapeHTML(t.parsed?.action_description || 'N/A')}</div>
+            </div>
+            <div class="thought-section">
+              <div class="thought-section-label">Raw LLM response</div>
+              <div class="thought-content">${escapeHTML(t.raw || 'N/A')}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    container.innerHTML = html;
+  } catch (e) { console.error('thoughts:', e); }
+}
+
+function escapeHTML(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Polling
+async function poll() {
+  await fetchState();
+  await fetchHistory();
+  await fetchStatus();
+}
+
+// Init
+poll();
+loadThoughtTicks();
+setInterval(poll, 10000);
+setInterval(loadThoughtTicks, 30000);
+</script>
+</body>
+</html>

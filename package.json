@@ -1,0 +1,13 @@
+{
+  "name": "emergent-world",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "init": "node src/world-init.js",
+    "tick": "node src/run-tick.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
