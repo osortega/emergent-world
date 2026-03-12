@@ -720,7 +720,7 @@ function renderCitizenPanel(c) {
   const inv=Object.entries(c.inventory||{});
   const invH=inv.length?inv.map(([k,v])=>'<span class="inv-chip">'+esc(k)+': '+v+'</span>').join(''):'<span style="color:#484f58;font-size:10px">Empty</span>';
   const mems=(c.memory||[]).slice(-5).reverse();
-  const memH=mems.length?mems.map(m=>'<div class="mem">\u2022 '+esc(typeof m==='string'?m:JSON.stringify(m))+'</div>').join(''):'<span style="color:#484f58;font-size:10px">None</span>';
+  const memH=mems.length?mems.map(m=>{ const txt=typeof m==='string'?m:(m.text||JSON.stringify(m)); const tag=memTag(m); return '<div class="mem" style="display:flex;align-items:flex-start;gap:5px"><span style="flex-shrink:0;font-size:11px;width:18px;text-align:center;'+(tag.bg?'background:'+tag.bg+';border-radius:3px;padding:1px 2px':'')+'" title="'+esc(tag.label)+'">'+tag.icon+'</span><span>'+esc(txt)+'</span></div>'; }).join(''):'<span style="color:#484f58;font-size:10px">None</span>';
   el.innerHTML='<div style="font-size:15px;font-weight:600;'+(alive?'':'text-decoration:line-through;color:#666')+'">'+esc(c.name)+(alive?'':' \u{1F480}')+'</div>'
     +'<div style="font-size:11px;color:#8b949e;margin:3px 0 7px;line-height:1.4">'+esc(c.physical_description||'')+'</div>'
     +'<div style="font-size:10px;color:#484f58;margin-bottom:7px">� '+esc(rn)+'</div>'
@@ -828,8 +828,23 @@ async function loadHistory() {
 //  ALL CITIZENS MEMORY PANEL
 // ================================================================
 let memAllExpanded = false;
-function memTag(text) {
-  const t = (text||'').toLowerCase();
+function memTag(mem) {
+  // New format: {text, action} — use the resolved action directly
+  if (mem && typeof mem === 'object' && mem.action) {
+    const tags = {
+      gather:   {icon:'🫳',label:'Gathered',bg:'rgba(63,185,80,.18)'},
+      move:     {icon:'🚶',label:'Moved',bg:'rgba(188,140,255,.18)'},
+      rest:     {icon:'😴',label:'Rested',bg:'rgba(139,148,158,.18)'},
+      interact: {icon:'💬',label:'Interacted',bg:'rgba(88,166,255,.18)'},
+      fight:    {icon:'⚔️',label:'Fought',bg:'rgba(248,81,73,.18)'},
+      explore:  {icon:'🔍',label:'Explored',bg:'rgba(125,211,252,.18)'},
+      make:     {icon:'🔨',label:'Crafted',bg:'rgba(227,179,65,.18)'},
+      nothing:  {icon:'💭',label:'Nothing',bg:''},
+    };
+    return tags[mem.action] || {icon:'💭',label:mem.action,bg:''};
+  }
+  // Old format: plain string — guess from text
+  const t = (typeof mem === 'string' ? mem : '').toLowerCase();
   if (t.match(/eat|ate|chew|swallow|mouth|consum|fed|food|hungr|starv|berr|fish|grain|drink|water/)) return {icon:'🍖',label:'Eating/Food',bg:'rgba(212,160,74,.18)'};
   if (t.match(/fight|attack|struck|hit|punch|claw|combat|wound|slash|defend|hurt|pain|bleed|injur/)) return {icon:'⚔️',label:'Fighting',bg:'rgba(248,81,73,.18)'};
   if (t.match(/gather|pick|collect|harvest|grab|took|found.*ground|scoop|pluck/)) return {icon:'🫳',label:'Gathering',bg:'rgba(63,185,80,.18)'};
@@ -864,8 +879,8 @@ function renderAllMemories() {
     const isOpen = memAllExpanded || (selectedId === c.id);
     const memHtml = mems.length
       ? mems.map((m, i) => {
-        const txt = typeof m==='string'?m:JSON.stringify(m);
-        const tag = memTag(txt);
+        const txt = typeof m==='string'?m:(m.text||JSON.stringify(m));
+        const tag = memTag(m);
         return '<div class="mem" style="margin-left:8px;display:flex;align-items:flex-start;gap:5px;'+(i===0?'color:#e6edf3;border-left:2px solid #d4a04a;padding-left:6px':'')+'">'
           + '<span style="flex-shrink:0;font-size:11px;width:20px;text-align:center;'+(tag.bg?'background:'+tag.bg+';border-radius:3px;padding:1px 2px':'')+'" title="'+esc(tag.label)+'">'+tag.icon+'</span>'
           + '<span>'+esc(txt)+'</span></div>';

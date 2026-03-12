@@ -131,7 +131,7 @@ function describeRecentEvents(region) {
 function describeMemories(citizen) {
   if (citizen.memory.length === 0) return 'You have no memories. Everything is new.';
   const recent = citizen.memory.slice(-10);
-  return `You remember:\n${recent.map(m => `- ${m}`).join('\n')}`;
+  return `You remember:\n${recent.map(m => `- ${typeof m === 'string' ? m : m.text}`).join('\n')}`;
 }
 
 const SYSTEM_PROMPT = `You are a being. You are not a character in a story. You are not aware of any simulation. You simply exist. You experience the world through your body and senses. You have no knowledge of civilization, technology, language, or culture. You only know what you can directly perceive and what you remember from your own experience.
@@ -436,7 +436,7 @@ export async function runTick() {
 
     // Add memory
     if (parsed.memory_update) {
-      citizen.memory.push(parsed.memory_update);
+      citizen.memory.push({ text: parsed.memory_update, action: parsed.action_type || 'nothing' });
       if (citizen.memory.length > 20) citizen.memory = citizen.memory.slice(-20);
     }
 
