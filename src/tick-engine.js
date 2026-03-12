@@ -9,6 +9,80 @@ const SEASONS = ['spring', 'spring', 'spring', 'summer', 'summer', 'summer', 'au
 const SEASON_FOOD_MULT = { spring: 1.0, summer: 1.5, autumn: 1.0, winter: 0.0 };
 const EDIBLE = ['grain', 'fish', 'herbs', 'fresh_water'];
 
+// ─── Name generator for offspring ──────────────────────────────────────
+const NAME_PARTS_START = ['A','Ba','Be','Bri','Ca','Da','De','E','Fa','Fe','Ga','Ha','I','Ja','Ka','Ki','La','Le','Li','Ma','Mi','Na','Ne','No','O','Pa','Ra','Re','Ri','Sa','Se','Si','Ta','Te','Th','Ti','Va','Ve','Vi','Za','Ze','Zu'];
+const NAME_PARTS_END = ['ra','na','el','is','an','en','or','al','on','ar','ik','ak','ell','yn','os','as','ir','ur','im','ax','id','ek','ol','un','iss','enn','ara','ira'];
+
+function generateName(existingNames) {
+  for (let i = 0; i < 50; i++) {
+    const start = NAME_PARTS_START[Math.floor(Math.random() * NAME_PARTS_START.length)];
+    const end = NAME_PARTS_END[Math.floor(Math.random() * NAME_PARTS_END.length)];
+    const name = start + end;
+    if (!existingNames.includes(name.toLowerCase()) && name.length >= 3 && name.length <= 7) {
+      return name;
+    }
+  }
+  return 'Child' + Math.floor(Math.random() * 999);
+}
+
+// ─── Physical description blending ─────────────────────────────────────
+const BODY_TYPES = ['Tall and lean', 'Short and compact', 'Wiry and quick', 'Broad and sturdy', 'Small and nimble', 'Lanky and angular', 'Slight and delicate', 'Stocky and strong'];
+const FEATURES = ['bright curious eyes', 'a calm steady gaze', 'sharp watchful eyes', 'wide trusting eyes', 'a furrowed brow', 'quick darting eyes', 'deep set thoughtful eyes', 'large expressive eyes'];
+const DETAILS = ['with long deft fingers', 'and calloused hands', 'with dirt under every nail', 'and tangled hair', 'with sun-darkened skin', 'and a cautious posture', 'with restless hands', 'and scarred knees'];
+
+function generateDescription() {
+  const body = BODY_TYPES[Math.floor(Math.random() * BODY_TYPES.length)];
+  const feature = FEATURES[Math.floor(Math.random() * FEATURES.length)];
+  const detail = DETAILS[Math.floor(Math.random() * DETAILS.length)];
+  return `${body} with ${feature} ${detail}`;
+}
+
+function blendSkill(a, b) {
+  const base = Math.round((a + b) / 2);
+  const mutation = Math.random() < 0.3 ? (Math.random() < 0.5 ? 1 : -1) : 0;
+  return Math.max(1, Math.min(5, base + mutation));
+}
+
+function spawnOffspring(parentA, parentB, region) {
+  const existingNames = readdirSync(join(WORLD_DIR, 'citizens')).map(f => f.replace('.json', ''));
+  const name = generateName(existingNames);
+  const id = name.toLowerCase();
+
+  const child = {
+    id,
+    name,
+    physical_description: generateDescription(),
+    skills: {
+      strength: blendSkill(parentA.skills.strength, parentB.skills.strength),
+      dexterity: blendSkill(parentA.skills.dexterity, parentB.skills.dexterity),
+      perception: blendSkill(parentA.skills.perception, parentB.skills.perception),
+      endurance: blendSkill(parentA.skills.endurance, parentB.skills.endurance),
+      social: blendSkill(parentA.skills.social, parentB.skills.social),
+      curiosity: blendSkill(parentA.skills.curiosity, parentB.skills.curiosity),
+    },
+    inventory: {},
+    memory: [],
+    health: 5,
+    max_health: 10,
+    food: 1,
+    region: parentA.region,
+    has_shelter: false,
+    relationships: {},
+    encounters: {},
+    alive: true,
+    born_tick: parseInt(readJSON(join(WORLD_DIR, 'clock.json')).tick) || 0,
+    model: 'claude-opus',
+    _starveTicks: 0,
+    _lastOutcome: null,
+    _parents: [parentA.id, parentB.id],
+  };
+
+  // Add to region
+  if (region.citizens) region.citizens.push(id);
+
+  return child;
+}
+
 function readJSON(path) { return JSON.parse(readFileSync(path, 'utf-8')); }
 function writeJSON(path, data) { writeFileSync(path, JSON.stringify(data, null, 2)); }
 
@@ -367,6 +441,56 @@ function resolveActions(citizens, actions, regions) {
     if (incoming.length > 0) {
       const interactionSummary = incoming.map(i => i.desc).join('\n');
       citizen._lastOutcome = (citizen._lastOutcome || '') + '\n' + interactionSummary;
+    }
+  }
+
+  // ─── Reproduction check ───────────────────────────────────────────
+  // When two bonded, healthy, well-fed citizens interact — small chance of new life
+  const interactPairs = events
+    .filter(e => e.type === 'interact')
+    .map(e => ({ a: citizens.find(c => c.id === e.citizen), b: citizens.find(c => c.id === e.targetId) }))
+    .filter(p => p.a && p.b && p.a.alive && p.b.alive);
+
+  for (const { a, b } of interactPairs) {
+    const relAB = a.relationships[b.id] || 0;
+    const relBA = b.relationships[a.id] || 0;
+    const minRel = Math.min(relAB, relBA);
+    if (
+      minRel >= 5 &&
+      a.health > 6 && b.health > 6 &&
+      a.food > 2 && b.food > 2 &&
+      Math.random() < 0.12
+    ) {
+      // New life
+      const child = spawnOffspring(a, b, regions[a.region]);
+      citizens.push(child);
+      writeJSON(join(WORLD_DIR, 'citizens', `${child.id}.json`), child);
+
+      // Parents see something
+      a._lastOutcome = (a._lastOutcome || '') + '\nA small new being appeared nearby. It is tiny and fragile.';
+      b._lastOutcome = (b._lastOutcome || '') + '\nA small new being appeared nearby. It is tiny and fragile.';
+
+      // Region event
+      const region = regions[a.region];
+      region.recent_events.push({
+        actorId: child.id,
+        who: child.physical_description,
+        description: `A small new being (${child.physical_description}) appeared in this place.`,
+      });
+
+      events.push({
+        type: 'birth',
+        citizen: child.id,
+        citizenName: child.name,
+        parentA: a.id,
+        parentAName: a.name,
+        parentB: b.id,
+        parentBName: b.name,
+        region: a.region,
+        description: `A new being, ${child.name}, appeared near ${a.name} and ${b.name}.`,
+      });
+
+      console.log(`  🌱 BIRTH: ${child.name} — offspring of ${a.name} & ${b.name}`);
     }
   }
 

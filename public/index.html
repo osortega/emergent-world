@@ -881,6 +881,7 @@ function memTag(mem) {
   if (t.match(/explor|search|examin|look|discover|curious|investigat|inspect|studi|watch|notic|observ/)) return {icon:'🔍',label:'Exploring',bg:'rgba(125,211,252,.18)'};
   if (t.match(/talk|speak|voice|gesture|face.*another|approach.*figure|interact|communicat|together|companion|friend|bond/)) return {icon:'💬',label:'Interacting',bg:'rgba(88,166,255,.18)'};
   if (t.match(/die|death|dead|dying|last breath|life.*end/)) return {icon:'💀',label:'Death',bg:'rgba(248,81,73,.25)'};
+  if (t.match(/small new being|birth|offspring|child|newborn|tiny.*fragile/)) return {icon:'🌱',label:'Birth',bg:'rgba(63,185,80,.25)'};
   if (t.match(/afraid|fear|danger|flee|run.*away|escape|scared/)) return {icon:'😨',label:'Fear',bg:'rgba(248,81,73,.12)'};
   return {icon:'💭',label:'Thought',bg:''};
 }
