@@ -1,7 +1,7 @@
 // Tick engine — runs one simulation tick with LLM-powered citizen decisions
 import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { callLLM } from './llm.js';
+import { callLLM, getModelConfig } from './llm.js';
 
 const WORLD_DIR = join(process.cwd(), 'world');
 
@@ -12,64 +12,49 @@ const EDIBLE = ['grain', 'fish', 'herbs', 'fresh_water'];
 function readJSON(path) { return JSON.parse(readFileSync(path, 'utf-8')); }
 function writeJSON(path, data) { writeFileSync(path, JSON.stringify(data, null, 2)); }
 
+// ─── Describe citizen body/state ──────────────────────────────────────
+
 function describeSkills(skills) {
   const descs = [];
   if (skills.strength >= 4) descs.push('You are very strong — your body is powerful.');
   else if (skills.strength >= 3) descs.push('You are fairly strong.');
   else if (skills.strength <= 1) descs.push('You are not very strong physically.');
-
   if (skills.dexterity >= 4) descs.push('Your hands are extremely nimble and precise.');
   else if (skills.dexterity >= 3) descs.push('Your hands are quick and steady.');
   else if (skills.dexterity <= 1) descs.push('Your movements are somewhat clumsy.');
-
   if (skills.perception >= 4) descs.push('Your senses are incredibly sharp — you notice everything.');
   else if (skills.perception >= 3) descs.push('You are quite observant.');
   else if (skills.perception <= 1) descs.push('You tend to miss subtle details.');
-
   if (skills.endurance >= 4) descs.push('You can endure great hardship — cold, pain, hunger affect you less.');
   else if (skills.endurance >= 3) descs.push('You are resilient and tough.');
   else if (skills.endurance <= 1) descs.push('You tire easily and are sensitive to discomfort.');
-
   if (skills.social >= 3) descs.push('You feel drawn to other beings — their presence comforts you.');
   else if (skills.social <= 1) descs.push('Other beings make you uneasy.');
-
   if (skills.curiosity >= 4) descs.push('Everything fascinates you — you feel compelled to explore and examine.');
   else if (skills.curiosity >= 3) descs.push('You are naturally curious about your surroundings.');
   else if (skills.curiosity <= 1) descs.push('You prefer the familiar over the unknown.');
-
   return descs.join(' ');
 }
 
 function describeInventory(inv) {
   const items = Object.entries(inv).filter(([, v]) => v > 0);
   if (items.length === 0) return 'You are carrying nothing. Your hands are empty.';
-  const descs = items.map(([item, count]) => {
-    const names = {
-      wood: 'pieces of wood',
-      stone: 'stones',
-      grain: 'handfuls of seeds/grain',
-      fish: 'fish',
-      herbs: 'bundles of plants',
-      fresh_water: 'containers of water',
-      hide: 'animal skins',
-      iron_ore: 'chunks of glinting rock',
-    };
-    return `${count} ${names[item] || item}`;
-  });
+  const names = {
+    wood: 'pieces of wood', stone: 'stones', grain: 'handfuls of seeds/grain',
+    fish: 'fish', herbs: 'bundles of plants', fresh_water: 'containers of water',
+    hide: 'animal skins', iron_ore: 'chunks of glinting rock',
+  };
+  const descs = items.map(([item, count]) => `${count} ${names[item] || item}`);
   return `You are carrying: ${descs.join(', ')}.`;
 }
 
 function describeHealth(citizen) {
   const parts = [];
-
-  // Health descriptions
   if (citizen.health <= 2) parts.push('Your body is shutting down. Every movement is agony. You can barely stay conscious. You are dying.');
   else if (citizen.health <= 4) parts.push('You feel weak and in pain. Your limbs tremble. Something is very wrong with your body.');
   else if (citizen.health <= 6) parts.push('You feel hurt and sore. Your body aches and you feel drained.');
   else if (citizen.health <= 8) parts.push('You feel mostly fine, with minor aches.');
   else parts.push('You feel healthy and strong.');
-
-  // Hunger — graduated urgency with ticks starving
   const ticksWithoutFood = citizen._starveTicks || 0;
   if (citizen.food <= 0 && ticksWithoutFood >= 6) {
     parts.push('YOU ARE STARVING. Your vision blurs. Your hands shake uncontrollably. Your body is consuming itself. You will die very soon if you do not eat. Nothing else matters — FIND SOMETHING TO EAT AND PUT IT IN YOUR MOUTH. NOW.');
@@ -86,7 +71,6 @@ function describeHealth(citizen) {
   } else {
     parts.push('You feel well-fed and satisfied.');
   }
-
   return parts.join(' ');
 }
 
@@ -94,11 +78,8 @@ function describeRegion(region) {
   let desc = region.description + '\n\n';
   desc += 'You notice:\n';
   for (const [, feat] of Object.entries(region.features)) {
-    if (feat.amount > 0) {
-      desc += `- ${feat.description}\n`;
-    } else {
-      desc += `- Where there once were resources, now there is nothing.\n`;
-    }
+    if (feat.amount > 0) desc += `- ${feat.description}\n`;
+    else desc += `- Where there once were resources, now there is nothing.\n`;
   }
   if (region.weather !== 'clear') {
     const weatherDescs = {
@@ -113,19 +94,51 @@ function describeRegion(region) {
   return desc;
 }
 
-function describeOtherBeings(citizen, allCitizens, region) {
+// ─── Identity recognition ─────────────────────────────────────────────
+// Citizens track encounters. When they've met someone, they recognize them.
+// No names are given — they form their own mental labels.
+
+function describeOtherBeings(citizen, allCitizens) {
   const others = allCitizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
   if (others.length === 0) return 'You are alone here. No other beings are visible.';
-  const descs = others.map(c => `- A figure: ${c.physical_description}`);
+  const encounters = citizen.encounters || {};
+  const descs = others.map(c => {
+    const timesMet = encounters[c.id]?.times || 0;
+    let recognition = '';
+    if (timesMet >= 5) recognition = ' You have seen this one many times. Their presence is very familiar.';
+    else if (timesMet >= 3) recognition = ' You have seen this one before. Their features are becoming familiar.';
+    else if (timesMet >= 1) recognition = ' Something about this one feels faintly familiar.';
+    return `- A figure: ${c.physical_description}${recognition}`;
+  });
   return `You see other beings nearby:\n${descs.join('\n')}`;
 }
 
-function describeRecentEvents(region) {
+// ─── Recent events with recognition ──────────────────────────────────
+
+function describeRecentEvents(citizen, region) {
   if (!region.recent_events || region.recent_events.length === 0) {
     return 'You have not noticed anyone doing anything recently.';
   }
-  const lines = region.recent_events.map(e => `- ${e.description}`);
+  const encounters = citizen.encounters || {};
+  const lines = region.recent_events.map(e => {
+    let desc = e.description;
+    // If this citizen recognizes the actor, note it
+    if (e.actorId && e.actorId !== citizen.id && encounters[e.actorId]?.times >= 1) {
+      const times = encounters[e.actorId].times;
+      if (times >= 3) desc += ' (You recognize this figure — you have seen them before.)';
+      else desc += ' (Something about this figure seems familiar.)';
+    }
+    return `- ${desc}`;
+  });
   return `You noticed recently:\n${lines.join('\n')}`;
+}
+
+// ─── Last tick outcome ────────────────────────────────────────────────
+// Tell the citizen what actually happened as a result of their last action
+
+function describeLastOutcome(citizen) {
+  if (!citizen._lastOutcome) return '';
+  return `\nWHAT HAPPENED LAST TIME:\n${citizen._lastOutcome}\n`;
 }
 
 function describeMemories(citizen) {
@@ -156,19 +169,23 @@ YOUR SURROUNDINGS:
 ${describeRegion(region)}
 
 OTHER BEINGS:
-${describeOtherBeings(citizen, allCitizens, region)}
+${describeOtherBeings(citizen, allCitizens)}
 
 WHAT YOU NOTICED RECENTLY:
-${describeRecentEvents(region)}
-
+${describeRecentEvents(citizen, region)}
+${describeLastOutcome(citizen)}
 YOUR MEMORIES:
 ${describeMemories(citizen)}
 
 What do you do?`;
 }
 
+// ─── Action resolution ────────────────────────────────────────────────
+
 function resolveActions(citizens, actions, regions) {
   const events = [];
+  // Collect interaction descriptions for exchange
+  const interactionDescs = {};
 
   for (const { citizenId, action, raw, prompt } of actions) {
     const citizen = citizens.find(c => c.id === citizenId);
@@ -177,14 +194,23 @@ function resolveActions(citizens, actions, regions) {
     const region = regions[citizen.region];
     const parsed = action;
 
+    // Track presence — all alive citizens in same region see each other
+    const cohabitants = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
+    for (const other of cohabitants) {
+      if (!citizen.encounters) citizen.encounters = {};
+      if (!citizen.encounters[other.id]) {
+        citizen.encounters[other.id] = { times: 0, physDesc: other.physical_description };
+      }
+      citizen.encounters[other.id].times += 1;
+      citizen.encounters[other.id].physDesc = other.physical_description;
+      citizen.encounters[other.id].lastTick = actions[0]?.tick;
+    }
+
     switch (parsed.action_type) {
       case 'gather': {
-        // Find a resource in the region to gather
         const features = Object.entries(region.features);
         let gathered = null;
         const target = (parsed.action_details?.target || '').toLowerCase();
-
-        // Try to match what they're going for
         for (const [resource, feat] of features) {
           if (feat.amount > 0 && (target.includes(resource) || target.includes(feat.description?.split(' ')[0]?.toLowerCase()))) {
             const amount = Math.min(2, feat.amount);
@@ -194,8 +220,6 @@ function resolveActions(citizens, actions, regions) {
             break;
           }
         }
-
-        // If no match, grab whatever's available
         if (!gathered) {
           for (const [resource, feat] of features) {
             if (feat.amount > 0) {
@@ -207,11 +231,12 @@ function resolveActions(citizens, actions, regions) {
             }
           }
         }
-
         if (gathered) {
+          citizen._lastOutcome = `Your hands found something. You picked up ${gathered.amount} ${gathered.resource}. You are now carrying it.`;
           events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource: gathered.resource, amount: gathered.amount, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) picked something up from the ground and kept it.` });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) bent down, picked something up from the ground, and kept it.` });
         } else {
+          citizen._lastOutcome = 'You searched but your hands found nothing. There was nothing here to pick up.';
           events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: 'Found nothing to gather.' });
         }
         break;
@@ -220,30 +245,27 @@ function resolveActions(citizens, actions, regions) {
         const adj = region.adjacent || [];
         if (adj.length > 0) {
           const oldRegion = citizen.region;
-          // Try to match target, otherwise random
           let dest = adj[Math.floor(Math.random() * adj.length)];
           const target = (parsed.action_details?.target || '').toLowerCase();
           for (const a of adj) {
-            if (target.includes(a.replace('-', ' ')) || target.includes(a.split('-')[0])) {
-              dest = a;
-              break;
-            }
+            if (target.includes(a.replace('-', ' ')) || target.includes(a.split('-')[0])) { dest = a; break; }
           }
-          // Remove from old region
           regions[oldRegion].citizens = regions[oldRegion].citizens.filter(id => id !== citizen.id);
-          regions[oldRegion].recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) walked away and disappeared.` });
-          // Add to new region
+          regions[oldRegion].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) walked away and disappeared.` });
           citizen.region = dest;
           regions[dest].citizens.push(citizen.id);
-          regions[dest].recent_events.push({ who: citizen.physical_description, description: `A new figure (${citizen.physical_description}) arrived from somewhere else.` });
+          regions[dest].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A new figure (${citizen.physical_description}) arrived from somewhere else.` });
+          const destName = regions[dest]?.name || dest;
+          citizen._lastOutcome = `You walked to a new place. The surroundings are different now — ${regions[dest]?.description?.split('.')[0] || destName}.`;
           events.push({ type: 'move', citizen: citizen.id, citizenName: citizen.name, from: oldRegion, to: dest, description: parsed.action_description });
         }
         break;
       }
       case 'rest': {
         citizen.health = Math.min(citizen.max_health, citizen.health + 1);
+        citizen._lastOutcome = 'You rested. Your body feels slightly better than before.';
         events.push({ type: 'rest', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-        region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) lay down and became still.` });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) lay down and became still.` });
         break;
       }
       case 'interact': {
@@ -252,31 +274,46 @@ function resolveActions(citizens, actions, regions) {
           const other = others[Math.floor(Math.random() * others.length)];
           citizen.relationships[other.id] = (citizen.relationships[other.id] || 0) + 1;
           other.relationships[citizen.id] = (other.relationships[citizen.id] || 0) + 1;
+          // Store the interaction for content exchange later
+          if (!interactionDescs[citizen.id]) interactionDescs[citizen.id] = [];
+          interactionDescs[citizen.id].push({ targetId: other.id, desc: parsed.action_description });
+          // The other citizen will see what this one did
+          if (!interactionDescs[other.id]) interactionDescs[other.id] = [];
+          interactionDescs[other.id].push({ targetId: citizen.id, desc: `A figure (${citizen.physical_description}) approached you. They: ${parsed.action_description}`, incoming: true });
+          citizen._lastOutcome = `You approached the figure (${other.physical_description}). You were close enough to see their face clearly.`;
           events.push({ type: 'interact', citizen: citizen.id, citizenName: citizen.name, targetId: other.id, targetName: other.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) approached another figure (${other.physical_description}) and they faced each other.` });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) approached another figure (${other.physical_description}). They were close together.` });
+        } else {
+          citizen._lastOutcome = 'You looked around for another being but no one was nearby.';
         }
         break;
       }
       case 'explore': {
-        // Check if the explore description actually describes gathering/searching for food
         const desc = (parsed.action_description || '').toLowerCase();
         const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest|search.*food|search.*edible|search.*eat|find.*food|find.*edible|gather|forag|hungr|desper.*food|urgent.*food/);
         if (isActuallyGathering) {
-          // Treat as gather instead
           const features = Object.entries(region.features);
+          let found = false;
           for (const [resource, feat] of features) {
             if (feat.amount > 0) {
               const amount = Math.min(2, feat.amount);
               feat.amount -= amount;
               citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
+              citizen._lastOutcome = `While searching, your hands found something — ${amount} ${resource}. You picked it up and kept it.`;
               events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource, amount, region: citizen.region, description: parsed.action_description });
-              region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) picked something up and kept it.` });
+              region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) searched around, found something on the ground, and picked it up.` });
+              found = true;
               break;
             }
           }
+          if (!found) {
+            citizen._lastOutcome = 'You searched desperately but found nothing to pick up or eat. Your hands came up empty.';
+            events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          }
         } else {
+          citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
           events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
         }
         break;
       }
@@ -288,7 +325,6 @@ function resolveActions(citizens, actions, regions) {
           const defenderPower = target.skills.strength + Math.random() * 3;
           if (attackerPower > defenderPower) {
             target.health -= 2;
-            // Loot one item
             const lootable = Object.entries(target.inventory).filter(([, v]) => v > 0);
             let loot = null;
             if (lootable.length > 0) {
@@ -297,35 +333,48 @@ function resolveActions(citizens, actions, regions) {
               citizen.inventory[item] = (citizen.inventory[item] || 0) + 1;
               loot = item;
             }
+            citizen._lastOutcome = `You struck the other figure and overpowered them. They fell back, hurt.${loot ? ` You took ${loot} from them.` : ''}`;
+            target._lastOutcome = `A figure attacked you. You were overpowered and hurt. Your body aches from the blows.${loot ? ` They took something from you.` : ''}`;
             events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: citizen.id, loot, region: citizen.region, description: parsed.action_description });
           } else {
             citizen.health -= 2;
+            citizen._lastOutcome = 'You attacked another figure but they were stronger. You were hurt and pushed back.';
+            target._lastOutcome = `A figure (${citizen.physical_description}) attacked you but you fought them off. They seemed weaker than you.`;
             events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: target.id, loot: null, region: citizen.region, description: parsed.action_description });
           }
-          region.recent_events.push({ who: citizen.physical_description, description: `Two figures clashed violently — (${citizen.physical_description}) and (${target.physical_description}).` });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `Two figures clashed violently — (${citizen.physical_description}) and (${target.physical_description}).` });
         }
         break;
       }
       case 'make': {
+        citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
         events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-        region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
         break;
       }
       default: {
+        citizen._lastOutcome = 'You stood still and did nothing. Time passed.';
         events.push({ type: 'nothing', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description || 'Did nothing.' });
         break;
       }
     }
   }
 
+  // Process interaction content exchange — add to last outcome
+  for (const citizen of citizens) {
+    if (!citizen.alive) continue;
+    const incoming = (interactionDescs[citizen.id] || []).filter(i => i.incoming);
+    if (incoming.length > 0) {
+      const interactionSummary = incoming.map(i => i.desc).join('\n');
+      citizen._lastOutcome = (citizen._lastOutcome || '') + '\n' + interactionSummary;
+    }
+  }
+
   // Survival costs
   for (const citizen of citizens) {
     if (!citizen.alive) continue;
-
     const region = regions[citizen.region];
     const season = SEASONS[((actions[0]?.tick || 1) - 1) % 12] || 'spring';
-
-    // Consume food from inventory
     const edibleItems = Object.entries(citizen.inventory).filter(([k, v]) => EDIBLE.includes(k) && v > 0);
     if (edibleItems.length > 0) {
       const [food] = edibleItems[0];
@@ -336,8 +385,6 @@ function resolveActions(citizens, actions, regions) {
     } else {
       citizen.food = Math.max(0, (citizen.food || 0) - 1);
     }
-
-    // Starvation — damage every 2 ticks without food (not every tick)
     if (citizen.food <= 0) {
       citizen._starveTicks = (citizen._starveTicks || 0) + 1;
       if (citizen._starveTicks % 2 === 0) {
@@ -345,8 +392,6 @@ function resolveActions(citizens, actions, regions) {
         events.push({ type: 'starvation', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} grows weaker from hunger.` });
       }
     }
-
-    // Winter exposure — no shelter = damage
     if (season === 'winter' && !citizen.has_shelter) {
       const resistance = citizen.skills?.endurance >= 4 ? 0.5 : 1;
       if (Math.random() < resistance) {
@@ -354,23 +399,15 @@ function resolveActions(citizens, actions, regions) {
         events.push({ type: 'exposure', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} suffers from the bitter cold.` });
       }
     }
-
-    // Weather effects
     const weather = region?.weather || 'clear';
-    if (weather === 'storm') {
-      if (Math.random() < 0.2 && !citizen.has_shelter) {
-        citizen.health -= 1;
-        events.push({ type: 'weather_damage', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} is battered by the storm.` });
-      }
+    if (weather === 'storm' && Math.random() < 0.2 && !citizen.has_shelter) {
+      citizen.health -= 1;
+      events.push({ type: 'weather_damage', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} is battered by the storm.` });
     }
-
-    // Terrain danger (mountain pass)
     if (region?.terrain === 'mountain' && Math.random() < 0.08) {
       citizen.health -= 1;
       events.push({ type: 'terrain_damage', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} slips on loose rocks and is hurt.` });
     }
-
-    // Death check
     if (citizen.health <= 0) {
       citizen.alive = false;
       events.push({ type: 'death', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, cause: citizen._starveTicks > 3 ? 'starvation' : 'health reached zero', description: `${citizen.name} has died.` });
@@ -381,21 +418,18 @@ function resolveActions(citizens, actions, regions) {
 }
 
 export async function runTick() {
-  // Read state
   const clock = readJSON(join(WORLD_DIR, 'clock.json'));
   clock.tick += 1;
   clock.season = SEASONS[(clock.tick - 1) % 12];
   if ((clock.tick - 1) % 12 === 0 && clock.tick > 1) clock.year += 1;
 
-  // Read regions
   const regions = {};
   for (const file of readdirSync(join(WORLD_DIR, 'regions'))) {
     const region = readJSON(join(WORLD_DIR, 'regions', file));
-    region.recent_events = []; // Clear previous tick's events
+    region.recent_events = [];
     regions[region.id] = region;
   }
 
-  // Resource regeneration
   const REGEN = { wood: 3, stone: 1, grain: 4, fish: 3, iron_ore: 0.5, hide: 1, herbs: 2, fresh_water: 5 };
   for (const region of Object.values(regions)) {
     for (const [resource, feat] of Object.entries(region.features)) {
@@ -405,7 +439,6 @@ export async function runTick() {
     }
   }
 
-  // Read citizens
   const citizens = [];
   for (const file of readdirSync(join(WORLD_DIR, 'citizens'))) {
     citizens.push(readJSON(join(WORLD_DIR, 'citizens', file)));
@@ -414,41 +447,39 @@ export async function runTick() {
   const alive = citizens.filter(c => c.alive);
   console.log(`Tick ${clock.tick} | ${clock.season} Year ${clock.year} | ${alive.length} alive`);
 
-  // Get each citizen's decision via LLM (parallel)
   const thoughts = {};
   const actions = [];
 
   const promises = alive.map(async (citizen) => {
     const region = regions[citizen.region];
+    const modelKey = citizen.model || 'gpt-4o-mini';
     const prompt = buildCitizenPrompt(citizen, region, citizens);
 
-    const result = await callLLM(SYSTEM_PROMPT, prompt);
+    const result = await callLLM(SYSTEM_PROMPT, prompt, modelKey);
     const parsed = result?.parsed || { thinking: 'confusion', action_description: 'stands still', action_type: 'nothing', action_details: {}, memory_update: 'Nothing happened.' };
 
     thoughts[citizen.id] = {
       citizenName: citizen.name,
+      model: result?.model || getModelConfig(modelKey).label,
       prompt,
       raw: result?.raw || 'LLM call failed',
       parsed,
     };
 
-    actions.push({ citizenId: citizen.id, action: parsed, raw: result?.raw, prompt });
+    actions.push({ citizenId: citizen.id, action: parsed, raw: result?.raw, prompt, tick: clock.tick });
 
-    // Add memory
     if (parsed.memory_update) {
       citizen.memory.push({ text: parsed.memory_update, action: parsed.action_type || 'nothing' });
       if (citizen.memory.length > 20) citizen.memory = citizen.memory.slice(-20);
     }
 
-    console.log(`  ${citizen.name}: ${parsed.action_type} — ${parsed.action_description}`);
+    console.log(`  ${citizen.name} [${getModelConfig(modelKey).short}]: ${parsed.action_type} — ${parsed.action_description}`);
   });
 
   await Promise.all(promises);
 
-  // Resolve all actions
   const events = resolveActions(citizens, actions, regions);
 
-  // Write everything back
   writeJSON(join(WORLD_DIR, 'clock.json'), clock);
   for (const [id, region] of Object.entries(regions)) {
     writeJSON(join(WORLD_DIR, 'regions', `${id}.json`), region);
@@ -457,21 +488,15 @@ export async function runTick() {
     writeJSON(join(WORLD_DIR, 'citizens', `${citizen.id}.json`), citizen);
   }
 
-  // Write history
   mkdirSync(join(WORLD_DIR, 'history'), { recursive: true });
   writeJSON(join(WORLD_DIR, 'history', `tick-${clock.tick}.json`), {
-    tick: clock.tick,
-    season: clock.season,
-    year: clock.year,
-    population: citizens.filter(c => c.alive).length,
-    events,
+    tick: clock.tick, season: clock.season, year: clock.year,
+    population: citizens.filter(c => c.alive).length, events,
   });
 
-  // Write thoughts (behind the scenes)
   mkdirSync(join(WORLD_DIR, 'thoughts'), { recursive: true });
   writeJSON(join(WORLD_DIR, 'thoughts', `tick-${clock.tick}.json`), thoughts);
 
   console.log(`  → ${events.length} events recorded`);
-
   return { tick: clock.tick, season: clock.season, year: clock.year, events, thoughts };
 }

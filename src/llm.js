@@ -1,9 +1,24 @@
-// LLM caller using GitHub Models API
+// LLM caller — supports multiple providers via GitHub Models API
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const API_URL = 'https://models.github.ai/inference/chat/completions';
-const MODEL = 'openai/gpt-4o-mini';
 
-export async function callLLM(systemPrompt, userPrompt, retries = 2) {
+// Available models — assign per citizen
+export const MODELS = {
+  'gpt-4o-mini': { id: 'openai/gpt-4o-mini', label: 'GPT-4o mini', short: '4o-m' },
+  'gpt-4o': { id: 'openai/gpt-4o', label: 'GPT-4o', short: '4o' },
+  'claude-sonnet': { id: 'anthropic/claude-sonnet-4', label: 'Claude Sonnet', short: 'son' },
+  'deepseek': { id: 'deepseek/DeepSeek-V3-0324', label: 'DeepSeek V3', short: 'ds' },
+};
+
+const DEFAULT_MODEL = 'gpt-4o-mini';
+
+export function getModelConfig(modelKey) {
+  return MODELS[modelKey] || MODELS[DEFAULT_MODEL];
+}
+
+export async function callLLM(systemPrompt, userPrompt, modelKey, retries = 2) {
+  const model = getModelConfig(modelKey);
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(API_URL, {
@@ -13,7 +28,7 @@ export async function callLLM(systemPrompt, userPrompt, retries = 2) {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          model: MODEL,
+          model: model.id,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt },
@@ -25,7 +40,7 @@ export async function callLLM(systemPrompt, userPrompt, retries = 2) {
 
       if (!res.ok) {
         const err = await res.text();
-        console.error(`LLM API error (attempt ${attempt + 1}): ${res.status} ${err}`);
+        console.error(`LLM API error [${model.label}] (attempt ${attempt + 1}): ${res.status} ${err}`);
         if (attempt < retries) continue;
         return null;
       }
@@ -36,16 +51,14 @@ export async function callLLM(systemPrompt, userPrompt, retries = 2) {
 
       // Try to parse JSON from response
       try {
-        // Find JSON in the response (might be wrapped in markdown code blocks)
         const jsonMatch = content.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
-          return { parsed: JSON.parse(jsonMatch[0]), raw: content };
+          return { parsed: JSON.parse(jsonMatch[0]), raw: content, model: model.label };
         }
       } catch (e) {
         // JSON parse failed
       }
 
-      // Return raw content with default action
       return {
         parsed: {
           thinking: content,
@@ -55,9 +68,10 @@ export async function callLLM(systemPrompt, userPrompt, retries = 2) {
           memory_update: 'I felt confused and did nothing.'
         },
         raw: content,
+        model: model.label,
       };
     } catch (err) {
-      console.error(`LLM call failed (attempt ${attempt + 1}):`, err.message);
+      console.error(`LLM call failed [${model.label}] (attempt ${attempt + 1}):`, err.message);
       if (attempt < retries) continue;
       return null;
     }

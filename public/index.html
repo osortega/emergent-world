@@ -710,6 +710,19 @@ function renderEventLog() {
     el.innerHTML=html;
   }
 }
+function encountersHtml(c) {
+  const enc = c.encounters || {};
+  const entries = Object.entries(enc).filter(([, v]) => v.times > 0).sort((a, b) => b[1].times - a[1].times);
+  if (entries.length === 0) return '';
+  const items = entries.map(([id, e]) => {
+    const other = world.citizens.find(x => x.id === id);
+    const name = other ? other.name : id;
+    const familiarity = e.times >= 5 ? 'Very familiar' : e.times >= 3 ? 'Familiar' : 'Faintly familiar';
+    const col = e.times >= 5 ? '#3fb950' : e.times >= 3 ? '#d4a04a' : '#484f58';
+    return '<div style="font-size:10px;display:flex;align-items:center;gap:5px;padding:2px 0"><span style="color:'+col+'">●</span> <span style="color:#8b949e">'+esc(name)+'</span> <span style="color:#484f58;font-size:9px">'+familiarity+' ('+e.times+'×)</span></div>';
+  }).join('');
+  return '<div class="st" style="margin-top:8px">Encounters</div><div style="margin-bottom:8px">'+items+'</div>';
+}
 function renderCitizenPanel(c) {
   const el=document.getElementById('cpanel');
   const hp=Math.round((c.health/(c.max_health||10))*100);
@@ -721,7 +734,8 @@ function renderCitizenPanel(c) {
   const invH=inv.length?inv.map(([k,v])=>'<span class="inv-chip">'+esc(k)+': '+v+'</span>').join(''):'<span style="color:#484f58;font-size:10px">Empty</span>';
   const mems=(c.memory||[]).slice(-5).reverse();
   const memH=mems.length?mems.map(m=>{ const txt=typeof m==='string'?m:(m.text||JSON.stringify(m)); const tag=memTag(m); return '<div class="mem" style="display:flex;align-items:flex-start;gap:5px"><span style="flex-shrink:0;font-size:11px;width:18px;text-align:center;'+(tag.bg?'background:'+tag.bg+';border-radius:3px;padding:1px 2px':'')+'" title="'+esc(tag.label)+'">'+tag.icon+'</span><span>'+esc(txt)+'</span></div>'; }).join(''):'<span style="color:#484f58;font-size:10px">None</span>';
-  el.innerHTML='<div style="font-size:15px;font-weight:600;'+(alive?'':'text-decoration:line-through;color:#666')+'">'+esc(c.name)+(alive?'':' \u{1F480}')+'</div>'
+  const modelBadge = c.model ? modelTag(c.model) : '';
+  el.innerHTML='<div style="font-size:15px;font-weight:600;display:flex;align-items:center;gap:6px;'+(alive?'':'text-decoration:line-through;color:#666')+'">'+esc(c.name)+(alive?'':' \u{1F480}')+modelBadge+'</div>'
     +'<div style="font-size:11px;color:#8b949e;margin:3px 0 7px;line-height:1.4">'+esc(c.physical_description||'')+'</div>'
     +'<div style="font-size:10px;color:#484f58;margin-bottom:7px">� '+esc(rn)+'</div>'
     +'<div style="margin-bottom:5px"><div style="display:flex;justify-content:space-between;font-size:9px;color:#8b949e;margin-bottom:2px"><span>Health</span><span>'+c.health+'/'+(c.max_health||10)+'</span></div><div class="bw"><div class="bf hp" style="width:'+hp+'%"></div></div></div>'
@@ -729,6 +743,7 @@ function renderCitizenPanel(c) {
     +'<div class="st">Skills</div>'+skills
     +'<div class="st" style="margin-top:8px">Inventory</div><div style="margin:4px 0 9px">'+invH+'</div>'
     +'<div class="st">Memories</div><div style="margin-bottom:8px">'+memH+'</div>'
+    +encountersHtml(c)
     +'<button class="btn" style="width:100%;margin-top:4px;font-size:11px" onclick="showThoughts(\''+c.id+'\')">&#129504; Show LLM Thoughts</button>';
 }
 function renderThoughts(cid) {
@@ -828,6 +843,16 @@ async function loadHistory() {
 //  ALL CITIZENS MEMORY PANEL
 // ================================================================
 let memAllExpanded = false;
+const MODEL_COLORS = {
+  'gpt-4o-mini': { bg:'rgba(16,163,127,.15)', color:'#10a37f', label:'4o-mini' },
+  'gpt-4o':      { bg:'rgba(16,163,127,.25)', color:'#10a37f', label:'4o' },
+  'claude-sonnet':{ bg:'rgba(204,120,50,.15)', color:'#cc7832', label:'Sonnet' },
+  'deepseek':    { bg:'rgba(80,140,255,.15)', color:'#508cff', label:'DeepSeek' },
+};
+function modelTag(modelKey) {
+  const m = MODEL_COLORS[modelKey] || { bg:'rgba(139,148,158,.15)', color:'#8b949e', label: modelKey || '?' };
+  return ' <span style="font-size:9px;font-weight:500;background:'+m.bg+';color:'+m.color+';border-radius:3px;padding:1px 5px;vertical-align:middle;text-decoration:none;display:inline-block">'+esc(m.label)+'</span>';
+}
 function memTag(mem) {
   // New format: {text, action} — use the resolved action directly
   if (mem && typeof mem === 'object' && mem.action) {
@@ -888,8 +913,8 @@ function renderAllMemories() {
       : '<div style="margin-left:8px;color:#484f58;font-size:10px;font-style:italic">No memories yet</div>';
     return '<div style="margin-bottom:8px">'
       + '<div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'none\'?\'block\':\'none\'" style="cursor:pointer;padding:4px 2px;display:flex;align-items:center;font-size:12px;font-weight:600;border-bottom:1px solid #21262d">'
-      + dot + '<span style="'+nameStyle+'">'+esc(c.name)+'</span>'
-      + '<span style="color:#484f58;font-size:10px;margin-left:auto">'+mems.length+' memories</span>'
+      + dot + '<span style="'+nameStyle+'">'+esc(c.name)+'</span>'+(c.model?modelTag(c.model):'')
+      + '<span style="color:#484f58;font-size:10px;margin-left:auto">'+mems.length+' mem</span>'
       + '</div>'
       + '<div style="display:'+(isOpen?'block':'none')+';padding:4px 0">'+memHtml+'</div>'
       + '</div>';
