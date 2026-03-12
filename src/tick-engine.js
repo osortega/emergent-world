@@ -456,7 +456,7 @@ function resolveActions(citizens, actions, regions) {
     const relBA = b.relationships[a.id] || 0;
     const minRel = Math.min(relAB, relBA);
     if (
-      minRel >= 5 &&
+      minRel >= 100 &&
       a.health > 6 && b.health > 6 &&
       a.food > 2 && b.food > 2 &&
       Math.random() < 0.12
