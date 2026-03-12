@@ -258,9 +258,9 @@ function resolveActions(citizens, actions, regions) {
         break;
       }
       case 'explore': {
-        // Check if the explore description actually describes gathering food
+        // Check if the explore description actually describes gathering/searching for food
         const desc = (parsed.action_description || '').toLowerCase();
-        const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest/);
+        const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest|search.*food|search.*edible|search.*eat|find.*food|find.*edible|gather|forag|hungr|desper.*food|urgent.*food/);
         if (isActuallyGathering) {
           // Treat as gather instead
           const features = Object.entries(region.features);
