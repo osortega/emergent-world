@@ -51,8 +51,8 @@ export async function callLLM(systemPrompt, userPrompt, modelKey, retries = 2) {
       if (model.api === 'copilot') {
         const token = getCopilotToken();
         if (!token) {
-          console.error(`No Copilot token available for ${model.label}`);
-          return null;
+          console.error(`No Copilot token available for ${model.label}, falling back to gpt-4o-mini`);
+          return callLLM(systemPrompt, userPrompt, 'gpt-4o-mini', retries);
         }
         url = COPILOT_URL;
         headers = {
