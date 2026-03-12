@@ -1,6 +1,4 @@
 // LLM caller — supports GitHub Models + GitHub Copilot APIs
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
@@ -9,20 +7,14 @@ const MODELS_URL = 'https://models.github.ai/inference/chat/completions';
 
 // GitHub Copilot API
 const COPILOT_URL = 'https://api.githubcopilot.com/chat/completions';
-const COPILOT_TOKEN_PATH = join(process.env.HOME, '.openclaw/credentials/github-copilot.token.json');
+const COPILOT_TOKEN = process.env.COPILOT_TOKEN;
 
 function getCopilotToken() {
-  try {
-    const data = JSON.parse(readFileSync(COPILOT_TOKEN_PATH, 'utf-8'));
-    if (data.expiresAt && Date.now() > data.expiresAt) {
-      console.error('Copilot token expired');
-      return null;
-    }
-    return data.token;
-  } catch (e) {
-    console.error('Could not read Copilot token:', e.message);
+  if (!COPILOT_TOKEN) {
+    console.error('COPILOT_TOKEN not set');
     return null;
   }
+  return COPILOT_TOKEN;
 }
 
 // Available models
