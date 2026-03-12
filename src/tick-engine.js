@@ -61,15 +61,31 @@ function describeInventory(inv) {
 
 function describeHealth(citizen) {
   const parts = [];
-  if (citizen.health <= 3) parts.push('You feel weak and in pain. Your body is failing.');
-  else if (citizen.health <= 6) parts.push('You feel hurt and sore.');
+
+  // Health descriptions
+  if (citizen.health <= 2) parts.push('Your body is shutting down. Every movement is agony. You can barely stay conscious. You are dying.');
+  else if (citizen.health <= 4) parts.push('You feel weak and in pain. Your limbs tremble. Something is very wrong with your body.');
+  else if (citizen.health <= 6) parts.push('You feel hurt and sore. Your body aches and you feel drained.');
   else if (citizen.health <= 8) parts.push('You feel mostly fine, with minor aches.');
   else parts.push('You feel healthy and strong.');
 
-  if (citizen.food <= 0) parts.push('Your stomach aches with hunger. You desperately need to eat.');
-  else if (citizen.food <= 1) parts.push('You feel hungry.');
-  else if (citizen.food <= 3) parts.push('You are not particularly hungry.');
-  else parts.push('You feel well-fed.');
+  // Hunger — graduated urgency with ticks starving
+  const ticksWithoutFood = citizen._starveTicks || 0;
+  if (citizen.food <= 0 && ticksWithoutFood >= 6) {
+    parts.push('YOU ARE STARVING. Your vision blurs. Your hands shake uncontrollably. Your body is consuming itself. You will die very soon if you do not eat. Nothing else matters — FIND SOMETHING TO EAT AND PUT IT IN YOUR MOUTH. NOW.');
+  } else if (citizen.food <= 0 && ticksWithoutFood >= 4) {
+    parts.push('You are starving. The hunger is overwhelming — it is all you can think about. Your body is weakening. You MUST find something to eat immediately. Grab anything — plants, creatures, anything you can put in your mouth.');
+  } else if (citizen.food <= 0 && ticksWithoutFood >= 2) {
+    parts.push('Your stomach cramps painfully. You are very hungry. The urge to eat dominates your thoughts. You need to find food — pick up plants, catch creatures, anything edible. This is urgent.');
+  } else if (citizen.food <= 0) {
+    parts.push('Your stomach feels empty and uncomfortable. You are hungry. You should find something to eat soon — plants, small creatures, seeds, anything that looks edible.');
+  } else if (citizen.food <= 1) {
+    parts.push('You feel a growing hunger. Your stomach is not full. You should look for something to eat before long.');
+  } else if (citizen.food <= 3) {
+    parts.push('You are not particularly hungry.');
+  } else {
+    parts.push('You feel well-fed and satisfied.');
+  }
 
   return parts.join(' ');
 }
@@ -242,8 +258,26 @@ function resolveActions(citizens, actions, regions) {
         break;
       }
       case 'explore': {
-        events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-        region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
+        // Check if the explore description actually describes gathering food
+        const desc = (parsed.action_description || '').toLowerCase();
+        const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest/);
+        if (isActuallyGathering) {
+          // Treat as gather instead
+          const features = Object.entries(region.features);
+          for (const [resource, feat] of features) {
+            if (feat.amount > 0) {
+              const amount = Math.min(2, feat.amount);
+              feat.amount -= amount;
+              citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
+              events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource, amount, region: citizen.region, description: parsed.action_description });
+              region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) picked something up and kept it.` });
+              break;
+            }
+          }
+        } else {
+          events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          region.recent_events.push({ who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
+        }
         break;
       }
       case 'fight': {
@@ -288,26 +322,58 @@ function resolveActions(citizens, actions, regions) {
   for (const citizen of citizens) {
     if (!citizen.alive) continue;
 
-    // Consume food
+    const region = regions[citizen.region];
+    const season = SEASONS[((actions[0]?.tick || 1) - 1) % 12] || 'spring';
+
+    // Consume food from inventory
     const edibleItems = Object.entries(citizen.inventory).filter(([k, v]) => EDIBLE.includes(k) && v > 0);
     if (edibleItems.length > 0) {
       const [food] = edibleItems[0];
       citizen.inventory[food]--;
       if (citizen.inventory[food] <= 0) delete citizen.inventory[food];
       citizen.food = Math.min(5, (citizen.food || 0) + 1);
+      citizen._starveTicks = 0;
     } else {
       citizen.food = Math.max(0, (citizen.food || 0) - 1);
     }
 
+    // Starvation — damage every 2 ticks without food (not every tick)
     if (citizen.food <= 0) {
+      citizen._starveTicks = (citizen._starveTicks || 0) + 1;
+      if (citizen._starveTicks % 2 === 0) {
+        citizen.health -= 1;
+        events.push({ type: 'starvation', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} grows weaker from hunger.` });
+      }
+    }
+
+    // Winter exposure — no shelter = damage
+    if (season === 'winter' && !citizen.has_shelter) {
+      const resistance = citizen.skills?.endurance >= 4 ? 0.5 : 1;
+      if (Math.random() < resistance) {
+        citizen.health -= 1;
+        events.push({ type: 'exposure', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} suffers from the bitter cold.` });
+      }
+    }
+
+    // Weather effects
+    const weather = region?.weather || 'clear';
+    if (weather === 'storm') {
+      if (Math.random() < 0.2 && !citizen.has_shelter) {
+        citizen.health -= 1;
+        events.push({ type: 'weather_damage', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} is battered by the storm.` });
+      }
+    }
+
+    // Terrain danger (mountain pass)
+    if (region?.terrain === 'mountain' && Math.random() < 0.08) {
       citizen.health -= 1;
-      events.push({ type: 'starvation', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} suffers from hunger.` });
+      events.push({ type: 'terrain_damage', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: `${citizen.name} slips on loose rocks and is hurt.` });
     }
 
     // Death check
     if (citizen.health <= 0) {
       citizen.alive = false;
-      events.push({ type: 'death', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, cause: 'health reached zero', description: `${citizen.name} has died.` });
+      events.push({ type: 'death', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, cause: citizen._starveTicks > 3 ? 'starvation' : 'health reached zero', description: `${citizen.name} has died.` });
     }
   }
 
