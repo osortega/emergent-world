@@ -7,7 +7,7 @@ const WORLD_DIR = join(process.cwd(), 'world');
 
 const SEASONS = ['spring', 'spring', 'spring', 'summer', 'summer', 'summer', 'autumn', 'autumn', 'autumn', 'winter', 'winter', 'winter'];
 const SEASON_FOOD_MULT = { spring: 1.0, summer: 1.5, autumn: 1.0, winter: 0.0 };
-const EDIBLE = ['grain', 'fish', 'herbs', 'fresh_water'];
+const EDIBLE = ['grain', 'fish', 'herbs', 'fresh_water', 'crops'];
 
 // ─── Name generator for offspring ──────────────────────────────────────
 const NAME_PARTS_START = ['A','Ba','Be','Bri','Ca','Da','De','E','Fa','Fe','Ga','Ha','I','Ja','Ka','Ki','La','Le','Li','Ma','Mi','Na','Ne','No','O','Pa','Ra','Re','Ri','Sa','Se','Si','Ta','Te','Th','Ti','Va','Ve','Vi','Za','Ze','Zu'];
@@ -204,7 +204,7 @@ function describeInventory(inv) {
   const names = {
     wood: 'pieces of wood', stone: 'stones', grain: 'handfuls of seeds/grain',
     fish: 'fish', herbs: 'bundles of plants', fresh_water: 'containers of water',
-    hide: 'animal skins', iron_ore: 'chunks of glinting rock',
+    hide: 'animal skins', iron_ore: 'chunks of glinting rock', crops: 'harvested food from planted crops',
   };
   const descs = items.map(([item, count]) => `${count} ${names[item] || item}`);
   return `You are carrying: ${descs.join(', ')}.`;
@@ -242,6 +242,15 @@ function describeRegion(region) {
   for (const [, feat] of Object.entries(region.features)) {
     if (feat.amount > 0) desc += `- ${feat.description}\n`;
     else desc += `- Where there once were resources, now there is nothing.\n`;
+  }
+  // Show farm plots
+  if (region.plots && region.plots.length > 0) {
+    const sprouting = region.plots.filter(p => p.growth >= 1 && p.growth < 3).length;
+    const growing = region.plots.filter(p => p.growth >= 3 && p.growth < 5).length;
+    const mature = region.plots.filter(p => p.growth >= 5).length;
+    if (sprouting > 0) desc += `- Tiny green shoots are poking out of the earth where seeds were buried.\n`;
+    if (growing > 0) desc += `- Tall green stalks are growing from the ground in a patch — they are getting bigger.\n`;
+    if (mature > 0) desc += `- Full-grown plants with heavy seed heads stand in a patch of earth — they look ready to pick.\n`;
   }
   if (region.weather !== 'clear') {
     const weatherDescs = {
@@ -395,6 +404,15 @@ function resolveActions(citizens, actions, regions) {
         }
         if (gathered) {
           citizen._lastOutcome = `Your hands found something. You picked up ${gathered.amount} ${gathered.resource}. You are now carrying it.`;
+          // If gathering crops, mark a harvest on a mature plot
+          if (gathered.resource === 'crops' && region.plots) {
+            const maturePlot = region.plots.find(p => p.growth >= 5 && p.harvests < 3);
+            if (maturePlot) {
+              maturePlot.harvests += 1;
+              maturePlot.growth = 2; // regrows from partial
+              console.log(`  🌾 HARVEST: ${citizen.name} harvested crops in ${region.name} (harvest ${maturePlot.harvests}/3)`);
+            }
+          }
           events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource: gathered.resource, amount: gathered.amount, region: citizen.region, description: parsed.action_description });
           region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) bent down, picked something up from the ground, and kept it.` });
         } else {
@@ -454,8 +472,22 @@ function resolveActions(citizens, actions, regions) {
         const desc = (parsed.action_description || '').toLowerCase();
         const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest|search.*food|search.*edible|search.*eat|find.*food|find.*edible|gather|forag|hungr|desper.*food|urgent.*food/);
         const isEdgeExploring = desc.match(/beyond|edge|horizon|far|border|new.*land|unknown|distant|leave|further|farthest|unexplored|past.*the|over.*hill|what.*lies|venture|wander.*away|walk.*away|keep.*going/);
+        const isCheckingPlots = desc.match(/check.*seed|check.*plant|check.*grow|look.*seed|look.*plant|look.*sprout|return.*where.*plant|back.*where.*seed|see.*if.*grow|examine.*soil|examine.*earth.*where/);
 
-        if (isActuallyGathering) {
+        if (isCheckingPlots && region.plots && region.plots.length > 0) {
+          const bestPlot = region.plots.reduce((a, b) => b.growth > a.growth ? b : a, region.plots[0]);
+          if (bestPlot.growth >= 5) {
+            citizen._lastOutcome = 'You went back to the place where seeds were pushed into the earth. Tall plants with heavy seed heads now stand there — they grew! Something you put in the ground became food. This changes everything.';
+          } else if (bestPlot.growth >= 3) {
+            citizen._lastOutcome = 'You went back to where seeds were buried. Green stalks are pushing up from the earth, taller than before. Something is happening. The seeds are becoming plants.';
+          } else if (bestPlot.growth >= 1) {
+            citizen._lastOutcome = 'You went back to where seeds were pushed into the earth. Tiny green shoots are poking through the soil. Something is growing.';
+          } else {
+            citizen._lastOutcome = 'You looked at the place where seeds were pushed into the earth. The ground looks the same. Nothing has changed yet.';
+          }
+          events.push({ type: 'check_plot', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt by a patch of earth, examining something growing there.` });
+        } else if (isActuallyGathering) {
           const features = Object.entries(region.features);
           let found = false;
           for (const [resource, feat] of features) {
@@ -532,9 +564,31 @@ function resolveActions(citizens, actions, regions) {
         break;
       }
       case 'make': {
-        citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
-        events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+        const makeDesc = (parsed.action_description || '').toLowerCase();
+        const isPlanting = makeDesc.match(/plant|seed|sow|push.*into.*earth|push.*into.*ground|push.*into.*soil|bury.*seed|put.*seed|press.*seed|dig.*soil|dig.*earth|poke.*hole.*seed/);
+        const hasGrain = (citizen.inventory.grain || 0) >= 1;
+
+        if (isPlanting && hasGrain) {
+          // Citizen is planting seeds — create a farm plot
+          citizen.inventory.grain -= 1;
+          if (citizen.inventory.grain <= 0) delete citizen.inventory.grain;
+          if (!region.plots) region.plots = [];
+          region.plots.push({
+            plantedBy: citizen.id,
+            plantedByName: citizen.name,
+            plantedTick: actions[0]?.tick || 0,
+            growth: 0,       // 0-5, harvestable at 5
+            harvests: 0,     // times harvested (max 3 before depleted)
+          });
+          citizen._lastOutcome = 'You pushed seeds into the soft earth and covered them. Something about this feels important — like the ground accepted what you gave it.';
+          events.push({ type: 'plant', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt down and pushed something into the earth, then covered it carefully.` });
+          console.log(`  🌱 FARMING: ${citizen.name} planted seeds in ${region.name}`);
+        } else {
+          citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
+          events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+        }
         break;
       }
       default: {
@@ -671,6 +725,25 @@ export async function runTick() {
       const regen = REGEN[resource] || 0;
       const mult = SEASON_FOOD_MULT[clock.season] || 1;
       feat.amount = Math.min(30, feat.amount + regen * (EDIBLE.includes(resource) ? mult : 1));
+    }
+    // Grow farm plots
+    if (region.plots && region.plots.length > 0) {
+      const growthRate = { spring: 2, summer: 2, autumn: 1, winter: 0 };
+      const rate = growthRate[clock.season] || 0;
+      region.plots = region.plots.filter(plot => {
+        if (plot.harvests >= 3) return false; // depleted
+        plot.growth = Math.min(5, plot.growth + rate);
+        return true;
+      });
+      // Mature plots add to region's grain supply
+      const maturePlots = region.plots.filter(p => p.growth >= 5);
+      if (maturePlots.length > 0) {
+        if (!region.features.crops) {
+          region.features.crops = { amount: 0, description: 'Green plants growing in neat patches where seeds were planted — they look ready to pick' };
+        }
+        // Each mature plot contributes 3 food
+        region.features.crops.amount = maturePlots.length * 3;
+      }
     }
   }
 

@@ -46,7 +46,10 @@ app.get('/api/state', (req, res) => {
 });
 
 // Alias
-app.get('/api/world', (req, res) => { res.redirect('/api/state'); });
+app.get('/api/world', (req, res, next) => {
+  req.url = '/api/state';
+  app.handle(req, res, next);
+});
 
 // API: All citizens
 app.get('/api/citizens', (req, res) => {
