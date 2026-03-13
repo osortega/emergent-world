@@ -45,6 +45,25 @@ app.get('/api/state', (req, res) => {
   res.json({ clock, regions, citizens });
 });
 
+// Alias
+app.get('/api/world', (req, res) => { res.redirect('/api/state'); });
+
+// API: All citizens
+app.get('/api/citizens', (req, res) => {
+  const citDir = join(WORLD_DIR, 'citizens');
+  if (!existsSync(citDir)) return res.json([]);
+  const citizens = readdirSync(citDir).map(f => readJSON(join(citDir, f))).filter(Boolean);
+  res.json(citizens);
+});
+
+// API: History for specific tick
+app.get('/api/history/:tick', (req, res) => {
+  const path = join(WORLD_DIR, 'history', `tick-${req.params.tick}.json`);
+  const data = readJSON(path);
+  if (!data) return res.status(404).json({error:'not found'});
+  res.json(data);
+});
+
 // API: All history
 app.get('/api/history', (req, res) => {
   const histDir = join(WORLD_DIR, 'history');

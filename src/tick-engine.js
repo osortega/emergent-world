@@ -86,6 +86,94 @@ function spawnOffspring(parentA, parentB, region) {
 function readJSON(path) { return JSON.parse(readFileSync(path, 'utf-8')); }
 function writeJSON(path, data) { writeFileSync(path, JSON.stringify(data, null, 2)); }
 
+// ─── Region discovery / procedural generation ─────────────────────────
+const REGION_TEMPLATES = [
+  {
+    terrain: 'plains', name: 'Grasslands',
+    description: 'Wide open fields of tall grass stretching in every direction. The wind creates waves across the golden stalks. Small rodents dart between the roots.',
+    features: { grain: { amount: 25, description: 'Wild grain and seed heads swaying in the wind' }, herbs: { amount: 15, description: 'Low shrubs and medicinal plants' } }
+  },
+  {
+    terrain: 'cave', name: 'Dark Caverns',
+    description: 'A yawning cave mouth opens into darkness. Dripping water echoes from within. Strange minerals glint on the walls. The air is cool and still.',
+    features: { stone: { amount: 35, description: 'Mineral deposits and loose rock formations' }, fresh_water: { amount: 20, description: 'Underground spring feeding a clear pool' } }
+  },
+  {
+    terrain: 'jungle', name: 'Dense Jungle',
+    description: 'Thick vegetation blocks the sky. Massive trees with tangled roots tower overhead. Strange fruits hang from vines. Insects hum in the humid air.',
+    features: { herbs: { amount: 30, description: 'Exotic plants and fruits hanging from vines' }, wood: { amount: 25, description: 'Fallen branches and thick bamboo stalks' } }
+  },
+  {
+    terrain: 'tundra', name: 'Frozen Tundra',
+    description: 'Flat, treeless expanse covered in frost and low scrub. The cold bites deep. Patches of ice reflect pale light. Hardy lichens cling to scattered boulders.',
+    features: { stone: { amount: 20, description: 'Frost-cracked boulders and gravel' }, herbs: { amount: 8, description: 'Tough lichens and frozen berries' } }
+  },
+  {
+    terrain: 'oasis', name: 'Hidden Oasis',
+    description: 'A lush green patch surrounding a clear spring. Palm-like trees provide shade. Colorful birds drink at the water edge. Fish dart in the pool.',
+    features: { fresh_water: { amount: 30, description: 'Crystal-clear spring water' }, fish: { amount: 20, description: 'Small colorful fish in the pool' }, herbs: { amount: 15, description: 'Fruit-bearing plants and soft grasses' } }
+  },
+  {
+    terrain: 'cliffs', name: 'Coastal Cliffs',
+    description: 'Sheer rock faces drop into churning water far below. Nests line the cliff ledges. Strong winds whip across the exposed stone. The view stretches endlessly.',
+    features: { stone: { amount: 20, description: 'Loose shale and flint along the cliff tops' }, fish: { amount: 15, description: 'Tidal pools trapped in rock shelves below' } }
+  },
+  {
+    terrain: 'swamp', name: 'Murky Swamp',
+    description: 'Stagnant water covers the ground between gnarled trees. Thick moss hangs from every branch. Bubbles rise from the dark water. Frogs croak in unison.',
+    features: { wood: { amount: 20, description: 'Rotting logs and flexible green branches' }, herbs: { amount: 20, description: 'Moss, mushrooms, and strange tubers in the mud' } }
+  },
+  {
+    terrain: 'volcanic', name: 'Scorched Lands',
+    description: 'Dark rock stretches across a landscape scarred by ancient fire. Steam vents hiss between cracks. The ground is warm underfoot. Obsidian shards litter the surface.',
+    features: { stone: { amount: 40, description: 'Obsidian shards and volcanic glass' }, fresh_water: { amount: 5, description: 'Hot spring with mineral-rich water' } }
+  },
+];
+
+const REGION_ADJECTIVES = ['Ancient', 'Whispering', 'Silent', 'Sunlit', 'Shadowed', 'Windswept', 'Misty', 'Forgotten', 'Verdant', 'Barren', 'Crystal', 'Iron', 'Amber', 'Twilight'];
+
+function generateNewRegion(sourceRegion, existingRegions) {
+  const existingCount = Object.keys(existingRegions).length;
+  if (existingCount >= 20) return null; // cap at 20 regions
+
+  // Pick a template that hasn't been used much
+  const usedTerrains = Object.values(existingRegions).map(r => r.terrain);
+  let available = REGION_TEMPLATES.filter(t => usedTerrains.filter(u => u === t.terrain).length < 2);
+  if (available.length === 0) available = REGION_TEMPLATES;
+  const template = available[Math.floor(Math.random() * available.length)];
+
+  // Generate unique name
+  const adj = REGION_ADJECTIVES[Math.floor(Math.random() * REGION_ADJECTIVES.length)];
+  const name = `${adj} ${template.name}`;
+  const id = name.toLowerCase().replace(/\s+/g, '-');
+
+  // Don't create if ID already exists
+  if (existingRegions[id]) return null;
+
+  // Deep copy features with some randomization
+  const features = {};
+  for (const [k, v] of Object.entries(template.features)) {
+    features[k] = {
+      amount: Math.floor(v.amount * (0.6 + Math.random() * 0.8)),
+      description: v.description,
+    };
+  }
+
+  return {
+    id,
+    name,
+    terrain: template.terrain,
+    description: template.description,
+    features,
+    adjacent: [],
+    weather: 'clear',
+    recent_events: [],
+    citizens: [],
+    discovered_by: null,
+    discovered_tick: null,
+  };
+}
+
 // ─── Describe citizen body/state ──────────────────────────────────────
 
 function describeSkills(skills) {
@@ -365,6 +453,8 @@ function resolveActions(citizens, actions, regions) {
       case 'explore': {
         const desc = (parsed.action_description || '').toLowerCase();
         const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest|search.*food|search.*edible|search.*eat|find.*food|find.*edible|gather|forag|hungr|desper.*food|urgent.*food/);
+        const isEdgeExploring = desc.match(/beyond|edge|horizon|far|border|new.*land|unknown|distant|leave|further|farthest|unexplored|past.*the|over.*hill|what.*lies|venture|wander.*away|walk.*away|keep.*going/);
+
         if (isActuallyGathering) {
           const features = Object.entries(region.features);
           let found = false;
@@ -383,6 +473,27 @@ function resolveActions(citizens, actions, regions) {
           if (!found) {
             citizen._lastOutcome = 'You searched desperately but found nothing to pick up or eat. Your hands came up empty.';
             events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+          }
+        } else if (isEdgeExploring && Math.random() < 0.08) {
+          // Discovery! Generate new region
+          const newRegion = generateNewRegion(region, regions);
+          if (newRegion) {
+            // Add adjacency both ways
+            region.adjacent.push(newRegion.id);
+            newRegion.adjacent.push(region.id);
+            // Write new region
+            regions[newRegion.id] = newRegion;
+            writeJSON(join(WORLD_DIR, 'regions', `${newRegion.id}.json`), newRegion);
+            // Update current region file with new adjacency
+            writeJSON(join(WORLD_DIR, 'regions', `${region.id}.json`), region);
+
+            citizen._lastOutcome = `You ventured far beyond the familiar ground. The terrain changed — you found a new place: ${newRegion.description.split('.')[0]}. You could travel there.`;
+            events.push({ type: 'discovery', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, newRegion: newRegion.id, description: `${citizen.name} discovered new land: ${newRegion.name}` });
+            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) returned from far away, seeming excited about something.` });
+            console.log(`  🗺️ DISCOVERY: ${citizen.name} found ${newRegion.name} (${newRegion.terrain})`);
+          } else {
+            citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
+            events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
           }
         } else {
           citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
