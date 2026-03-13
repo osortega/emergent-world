@@ -568,10 +568,15 @@ function resolveActions(citizens, actions, regions) {
         const isPlanting = makeDesc.match(/plant|seed|sow|push.*into.*earth|push.*into.*ground|push.*into.*soil|bury.*seed|put.*seed|press.*seed|dig.*soil|dig.*earth|poke.*hole.*seed/);
         const hasGrain = (citizen.inventory.grain || 0) >= 1;
 
-        if (isPlanting && hasGrain) {
-          // Citizen is planting seeds — create a farm plot
-          citizen.inventory.grain -= 1;
-          if (citizen.inventory.grain <= 0) delete citizen.inventory.grain;
+        const regionHasGrain = region.features?.grain?.amount >= 1;
+        if (isPlanting && (hasGrain || regionHasGrain)) {
+          // Citizen is planting seeds — consume from inventory first, else from region
+          if (hasGrain) {
+            citizen.inventory.grain -= 1;
+            if (citizen.inventory.grain <= 0) delete citizen.inventory.grain;
+          } else {
+            region.features.grain.amount -= 1;
+          }
           if (!region.plots) region.plots = [];
           region.plots.push({
             plantedBy: citizen.id,
