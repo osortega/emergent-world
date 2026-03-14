@@ -205,6 +205,8 @@ function describeInventory(inv) {
     wood: 'pieces of wood', stone: 'stones', grain: 'handfuls of seeds/grain',
     fish: 'fish', herbs: 'bundles of plants', fresh_water: 'containers of water',
     hide: 'animal skins', iron_ore: 'chunks of glinting rock', crops: 'harvested food from planted crops',
+    stone_tool: 'a sharp stone bound to wood — it fits in your hand',
+    fishing_spear: 'a long pointed stick — good for stabbing',
   };
   const descs = items.map(([item, count]) => `${count} ${names[item] || item}`);
   return `You are carrying: ${descs.join(', ')}.`;
@@ -240,7 +242,10 @@ function describeRegion(region) {
   let desc = region.description + '\n\n';
   desc += 'You notice:\n';
   for (const [, feat] of Object.entries(region.features)) {
-    if (feat.amount > 0) desc += `- ${feat.description}\n`;
+    if (feat.amount > 20) desc += `- ${feat.description}\n`;
+    else if (feat.amount > 10) desc += `- ${feat.description} (though less plentiful than before)\n`;
+    else if (feat.amount > 3) desc += `- ${feat.description} (only a little remains)\n`;
+    else if (feat.amount > 0) desc += `- Almost nothing left of: ${feat.description}\n`;
     else desc += `- Where there once were resources, now there is nothing.\n`;
   }
   // Show farm plots
@@ -312,10 +317,88 @@ function describeLastOutcome(citizen) {
   return `\nWHAT HAPPENED LAST TIME:\n${citizen._lastOutcome}\n`;
 }
 
+// ─── Memory compression ───────────────────────────────────────────────
+// Instead of hard-dropping old memories, compress duplicates and similar entries
+
+function compressMemories(memories) {
+  if (memories.length <= 20) return memories;
+
+  // Take oldest 10 and compress, keep newest 10 intact
+  const old = memories.slice(0, memories.length - 10);
+  const recent = memories.slice(-10);
+
+  // Group by action type and deduplicate similar texts
+  const groups = {};
+  for (const m of old) {
+    const text = typeof m === 'string' ? m : m.text;
+    const action = typeof m === 'string' ? 'unknown' : (m.action || 'unknown');
+    if (!groups[action]) groups[action] = [];
+    groups[action].push(text);
+  }
+
+  const compressed = [];
+  for (const [action, texts] of Object.entries(groups)) {
+    // Deduplicate near-identical entries
+    const unique = [...new Set(texts.map(t => t.toLowerCase().trim()))];
+    if (unique.length === 1) {
+      compressed.push({ text: `${texts[0]} (this happened many times)`, action, compressed: true });
+    } else if (unique.length <= 3) {
+      for (const t of texts.slice(0, 2)) {
+        compressed.push({ text: t, action });
+      }
+    } else {
+      // Keep first and last, summarize middle
+      compressed.push({ text: texts[0], action });
+      compressed.push({ text: `...and ${texts.length - 2} similar experiences of ${action}...`, action, compressed: true });
+      compressed.push({ text: texts[texts.length - 1], action });
+    }
+  }
+
+  return [...compressed.slice(0, 10), ...recent];
+}
+
 function describeMemories(citizen) {
   if (citizen.memory.length === 0) return 'You have no memories. Everything is new.';
-  const recent = citizen.memory.slice(-10);
+  const recent = citizen.memory.slice(-30);
   return `You remember:\n${recent.map(m => `- ${typeof m === 'string' ? m : m.text}`).join('\n')}`;
+}
+
+// ─── Crafting recipes ─────────────────────────────────────────────────
+// Citizens discover these by trying — no hints, just physics responding
+const RECIPES = {
+  'stone_tool':      { needs: { stone: 2, wood: 1 }, desc: 'You smashed the stones together and bound a sharp piece to the wood. It fits in your hand — a tool. It feels powerful.' },
+  'wood_shelter':    { needs: { wood: 5 }, desc: 'You leaned the wood together and bound them. A rough structure stands — it blocks wind and rain. You could sleep under this.', effect: 'shelter' },
+  'stone_wall':      { needs: { stone: 5 }, desc: 'You stacked the stones carefully. A low wall stands. It feels solid and permanent.', effect: 'shelter' },
+  'fishing_spear':   { needs: { wood: 1, stone_tool: 1 }, desc: 'You sharpened the end of the wood with your tool. It is long and pointed — good for stabbing into water.' },
+  'herb_poultice':   { needs: { herbs: 2 }, desc: 'You crushed the plants and pressed the wet mass against your skin. It stings, then soothes. Your body feels better.', effect: 'heal' },
+};
+
+function tryRecipe(citizen, makeDesc) {
+  // Try to match what they're describing to a recipe
+  const descLower = makeDesc.toLowerCase();
+  const priorities = [];
+
+  for (const [itemName, recipe] of Object.entries(RECIPES)) {
+    // Check if they have the materials
+    const hasAll = Object.entries(recipe.needs).every(([mat, qty]) => (citizen.inventory[mat] || 0) >= qty);
+    if (!hasAll) continue;
+
+    // Score based on description match
+    let score = 0;
+    if (itemName === 'stone_tool' && descLower.match(/tool|sharp|smash|hit.*stone|stone.*wood|bind|attach|combine/)) score = 3;
+    if (itemName === 'wood_shelter' && descLower.match(/shelter|roof|cover|lean.*wood|build|structure|house|hut|protect/)) score = 3;
+    if (itemName === 'stone_wall' && descLower.match(/wall|stack.*stone|pile.*stone|barrier|build.*stone|stone.*together/)) score = 3;
+    if (itemName === 'fishing_spear' && descLower.match(/spear|sharp.*stick|point.*wood|stab|fish.*tool|weapon/)) score = 3;
+    if (itemName === 'herb_poultice' && descLower.match(/crush.*plant|medicine|heal|bandage|poultice|rub.*herb|press.*plant/)) score = 3;
+    // Generic "make something" with materials available — low score
+    if (score === 0 && descLower.match(/make|build|create|craft|assemble|construct|combine|put.*together/)) score = 1;
+
+    if (score > 0) priorities.push({ itemName, recipe, score });
+  }
+
+  if (priorities.length === 0) return null;
+  priorities.sort((a, b) => b.score - a.score);
+  return priorities[0];
 }
 
 const SYSTEM_PROMPT = `You are a being. You are not a character in a story. You are not aware of any simulation. You simply exist. You experience the world through your body and senses. You have no knowledge of civilization, technology, language, or culture. You only know what you can directly perceive and what you remember from your own experience.
@@ -384,7 +467,8 @@ function resolveActions(citizens, actions, regions) {
         const target = (parsed.action_details?.target || '').toLowerCase();
         for (const [resource, feat] of features) {
           if (feat.amount > 0 && (target.includes(resource) || target.includes(feat.description?.split(' ')[0]?.toLowerCase()))) {
-            const amount = Math.min(2, feat.amount);
+            const hasTool = (citizen.inventory.stone_tool || 0) > 0;
+            const amount = Math.min(hasTool ? 4 : 2, feat.amount);
             feat.amount -= amount;
             citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
             gathered = { resource, amount };
@@ -394,7 +478,8 @@ function resolveActions(citizens, actions, regions) {
         if (!gathered) {
           for (const [resource, feat] of features) {
             if (feat.amount > 0) {
-              const amount = Math.min(2, feat.amount);
+              const hasTool = (citizen.inventory.stone_tool || 0) > 0;
+              const amount = Math.min(hasTool ? 4 : 2, feat.amount);
               feat.amount -= amount;
               citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
               gathered = { resource, amount };
@@ -506,7 +591,7 @@ function resolveActions(citizens, actions, regions) {
             citizen._lastOutcome = 'You searched desperately but found nothing to pick up or eat. Your hands came up empty.';
             events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
           }
-        } else if (isEdgeExploring && Math.random() < 0.08) {
+        } else if (isEdgeExploring && Math.random() < (0.08 + (citizen.skills.perception || 1) * 0.04)) {
           // Discovery! Generate new region
           const newRegion = generateNewRegion(region, regions);
           if (newRegion) {
@@ -590,9 +675,32 @@ function resolveActions(citizens, actions, regions) {
           region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt down and pushed something into the earth, then covered it carefully.` });
           console.log(`  🌱 FARMING: ${citizen.name} planted seeds in ${region.name}`);
         } else {
-          citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
-          events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+          // Try crafting recipes
+          const recipe = tryRecipe(citizen, parsed.action_description || '');
+          if (recipe) {
+            // Consume materials
+            for (const [mat, qty] of Object.entries(recipe.recipe.needs)) {
+              citizen.inventory[mat] -= qty;
+              if (citizen.inventory[mat] <= 0) delete citizen.inventory[mat];
+            }
+            // Apply effects
+            if (recipe.recipe.effect === 'shelter') {
+              citizen.has_shelter = true;
+            } else if (recipe.recipe.effect === 'heal') {
+              citizen.health = Math.min(citizen.max_health, citizen.health + 3);
+            } else {
+              // Add crafted item to inventory
+              citizen.inventory[recipe.itemName] = (citizen.inventory[recipe.itemName] || 0) + 1;
+            }
+            citizen._lastOutcome = recipe.recipe.desc;
+            events.push({ type: 'craft', citizen: citizen.id, citizenName: citizen.name, item: recipe.itemName, region: citizen.region, description: parsed.action_description });
+            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) worked with objects in their hands, making something new.` });
+            console.log(`  🔨 CRAFT: ${citizen.name} made ${recipe.itemName}`);
+          } else {
+            citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
+            events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+          }
         }
         break;
       }
@@ -626,7 +734,7 @@ function resolveActions(citizens, actions, regions) {
     const relBA = b.relationships[a.id] || 0;
     const minRel = Math.min(relAB, relBA);
     if (
-      minRel >= 100 &&
+      minRel >= 30 &&
       a.health > 6 && b.health > 6 &&
       a.food > 2 && b.food > 2 &&
       Math.random() < 0.12
@@ -676,6 +784,9 @@ function resolveActions(citizens, actions, regions) {
       if (citizen.inventory[food] <= 0) delete citizen.inventory[food];
       citizen.food = Math.min(5, (citizen.food || 0) + 1);
       citizen._starveTicks = 0;
+      // Feedback — let them learn the connection between carrying food and feeling fed
+      const foodNames = { grain: 'seeds', fish: 'fish', herbs: 'plants', fresh_water: 'water', crops: 'food from the earth' };
+      citizen._lastOutcome = (citizen._lastOutcome || '') + `\nYou ate some ${foodNames[food] || food} from what you were carrying. Your stomach feels better.`;
     } else {
       citizen.food = Math.max(0, (citizen.food || 0) - 1);
     }
@@ -783,7 +894,7 @@ export async function runTick() {
 
     if (parsed.memory_update) {
       citizen.memory.push({ text: parsed.memory_update, action: parsed.action_type || 'nothing' });
-      if (citizen.memory.length > 20) citizen.memory = citizen.memory.slice(-20);
+      if (citizen.memory.length > 100) citizen.memory = compressMemories(citizen.memory);
     }
 
     console.log(`  ${citizen.name} [${getModelConfig(modelKey).short}]: ${parsed.action_type} — ${parsed.action_description}`);
