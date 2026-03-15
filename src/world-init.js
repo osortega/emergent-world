@@ -79,14 +79,9 @@ const REGIONS = {
 // Physical descriptions — no cultural loading, just bodies
 const CITIZENS = [
   { name: 'Eron', physical_description: 'Tall and broad-shouldered with dark tangled hair and rough heavy hands', region: 'northern-forest', skills: { strength: 4, dexterity: 2, perception: 2, endurance: 3, social: 1, curiosity: 1 } },
-  { name: 'Vell', physical_description: 'Small and wiry with sharp watchful eyes and quick restless fingers', region: 'northern-forest', skills: { strength: 1, dexterity: 4, perception: 3, endurance: 1, social: 1, curiosity: 2 } },
   { name: 'Thara', physical_description: 'Medium build with sun-darkened skin and a calm steady gaze', region: 'river-valley', skills: { strength: 2, dexterity: 2, perception: 3, endurance: 2, social: 2, curiosity: 2 } },
-  { name: 'Kael', physical_description: 'Lean and tall with long limbs and an intense focused expression', region: 'river-valley', skills: { strength: 2, dexterity: 3, perception: 2, endurance: 2, social: 1, curiosity: 3 } },
   { name: 'Mira', physical_description: 'Short and sturdy with thick arms and a wide open face', region: 'coastal-plains', skills: { strength: 3, dexterity: 2, perception: 2, endurance: 3, social: 2, curiosity: 1 } },
-  { name: 'Dask', physical_description: 'Tall and thin with angular features and constantly moving eyes', region: 'coastal-plains', skills: { strength: 1, dexterity: 3, perception: 4, endurance: 1, social: 1, curiosity: 3 } },
-  { name: 'Oru', physical_description: 'Compact and muscular with scarred forearms and a set jaw', region: 'mountain-pass', skills: { strength: 4, dexterity: 1, perception: 2, endurance: 4, social: 1, curiosity: 1 } },
-  { name: 'Liss', physical_description: 'Slender with pale skin and delicate careful movements', region: 'mountain-pass', skills: { strength: 1, dexterity: 4, perception: 3, endurance: 2, social: 2, curiosity: 1 } },
-  { name: 'Brynn', physical_description: 'Average height with a weathered face and an easy relaxed posture', region: 'salt-marshes', skills: { strength: 2, dexterity: 2, perception: 2, endurance: 2, social: 3, curiosity: 2 } },
+  { name: 'Dask', physical_description: 'Tall and thin with angular features and constantly moving eyes', region: 'river-valley', skills: { strength: 1, dexterity: 3, perception: 4, endurance: 1, social: 1, curiosity: 3 } },
   { name: 'Zev', physical_description: 'Wiry and restless with bright curious eyes and dirt under every nail', region: 'salt-marshes', skills: { strength: 2, dexterity: 2, perception: 3, endurance: 1, social: 1, curiosity: 4 } },
 ];
 
@@ -119,12 +114,16 @@ function init() {
       memory: [],
       health: 10,
       max_health: 10,
-      food: 0,
+      food: 3,
       region: c.region,
       has_shelter: false,
       relationships: {},
+      encounters: {},
       alive: true,
       born_tick: 0,
+      model: 'claude-opus',
+      _starveTicks: 0,
+      _lastOutcome: null,
     };
     writeFileSync(join(WORLD_DIR, 'citizens', `${citizen.id}.json`), JSON.stringify(citizen, null, 2));
   }

@@ -241,11 +241,12 @@ function describeHealth(citizen) {
 function describeRegion(region) {
   let desc = region.description + '\n\n';
   desc += 'You notice:\n';
-  for (const [, feat] of Object.entries(region.features)) {
-    if (feat.amount > 20) desc += `- ${feat.description}\n`;
-    else if (feat.amount > 10) desc += `- ${feat.description} (though less plentiful than before)\n`;
-    else if (feat.amount > 3) desc += `- ${feat.description} (only a little remains)\n`;
-    else if (feat.amount > 0) desc += `- Almost nothing left of: ${feat.description}\n`;
+  for (const [resource, feat] of Object.entries(region.features)) {
+    const edibleHint = EDIBLE.includes(resource) ? ' — looks edible' : '';
+    if (feat.amount > 20) desc += `- ${feat.description}${edibleHint}\n`;
+    else if (feat.amount > 10) desc += `- ${feat.description} (though less plentiful than before)${edibleHint}\n`;
+    else if (feat.amount > 3) desc += `- ${feat.description} (only a little remains)${edibleHint}\n`;
+    else if (feat.amount > 0) desc += `- Almost nothing left of: ${feat.description}${edibleHint}\n`;
     else desc += `- Where there once were resources, now there is nothing.\n`;
   }
   // Show farm plots
@@ -406,11 +407,12 @@ const SYSTEM_PROMPT = `You are a being. You are not a character in a story. You 
 You must respond in this EXACT JSON format and nothing else:
 {
   "thinking": "your raw inner experience — sensations, urges, confusion, instincts (2-3 sentences)",
-  "action_description": "what you physically do, described as simple bodily movements (1-2 sentences)",
-  "action_type": "ONE of: gather, move, rest, interact, make, explore, fight, nothing",
-  "action_details": { "target": "what you act on if relevant" },
+  "action": "what you physically do right now, described as simple bodily movements (1-2 sentences)",
   "memory_update": "one short sentence to remember about this moment"
-}`;
+}
+
+Describe your action as raw physical movement — what your body actually does. Do not use abstract words like 'gather', 'rest', 'explore', 'interact'. Just describe what your body does. Examples: "I close my fingers around the seeds and shove them into my mouth." or "I walk toward where the light is different." or "I pick up the wet plant and chew it." or "I lie down on the ground and close my eyes."`;
+
 
 function buildCitizenPrompt(citizen, region, allCitizens) {
   return `YOUR BODY:
@@ -434,11 +436,139 @@ ${describeMemories(citizen)}
 What do you do?`;
 }
 
+// ─── Dynamic action interpretation via LLM ───────────────────────────
+// A second LLM call interprets free-form action descriptions into mechanical effects.
+// This replaces rigid regex pattern matching — the interpreter understands nuance,
+// novel actions, and can detect multiple simultaneous effects.
+
+const INTERPRETER_PROMPT = `You are a physics engine for a primitive world simulation. A being has described what their body does. You must determine the MECHANICAL EFFECTS of their action on the world.
+
+You will receive:
+- What the being did (their action description)
+- What they are carrying (inventory)
+- What resources exist in their current region
+- Who else is nearby
+
+Respond with ONLY this JSON (no other text):
+{
+  "effects": ["list of effect strings that apply"],
+  "target_resource": "which resource they're interacting with, if any (e.g. 'grain', 'fish', 'stone')",
+  "target_being": "description snippet of being they're interacting with, if any",
+  "movement_direction": "any directional intent for travel (e.g. 'toward water', 'away', 'beyond')",
+  "craft_description": "what they're trying to make/build, if any"
+}
+
+Valid effects (include ALL that apply — multiple can fire from one action):
+- "eating" — putting something in their mouth, chewing, consuming, drinking
+- "gathering" — picking up, grabbing, collecting something from the ground/environment
+- "moving" — walking, running, travelling, leaving this area
+- "resting" — lying down, sleeping, recovering, staying still to heal
+- "fighting" — attacking, hitting, striking another being
+- "crafting" — combining materials, building, constructing, making something
+- "interacting" — approaching, gesturing to, touching another being (non-violent)
+- "planting" — pushing seeds into earth, burying seeds
+- "checking_plots" — examining/returning to where seeds were planted
+- "exploring" — venturing to edges/borders, looking into the distance, seeking new lands
+
+Examples:
+- "I grab the seed heads and shove them in my mouth" → effects: ["gathering", "eating"], target_resource: "grain"
+- "I walk toward where the air smells different" → effects: ["moving"], movement_direction: "toward different air"
+- "I lie down and close my eyes" → effects: ["resting"]
+- "I smash two stones together and bind the sharp piece to wood" → effects: ["crafting"], craft_description: "sharp stone bound to wood"
+- "I splash water from the pool onto my wounds and drink some" → effects: ["eating"], target_resource: "fresh_water"
+- "I pick up stones and stack them into a low wall" → effects: ["gathering", "crafting"], target_resource: "stone", craft_description: "stacking stones into wall"
+
+Be generous with interpretation. If the being is clearly TRYING to eat, even clumsily, mark "eating". If they move AND gather, mark both.`;
+
+function buildInterpreterPrompt(actionText, citizen, region, allCitizens) {
+  const inv = Object.entries(citizen.inventory).filter(([, v]) => v > 0);
+  const invStr = inv.length > 0 ? inv.map(([k, v]) => `${v} ${k}`).join(', ') : 'nothing';
+
+  const resources = Object.entries(region.features)
+    .filter(([, f]) => f.amount > 0)
+    .map(([k, f]) => `${k} (${f.amount} available) — ${f.description}`);
+  const resStr = resources.length > 0 ? resources.join('\n  ') : 'nothing';
+
+  const others = allCitizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
+  const othersStr = others.length > 0
+    ? others.map(c => c.physical_description).join('; ')
+    : 'no one';
+
+  const plots = (region.plots || []).map(p => {
+    if (p.growth >= 5) return 'mature crops ready to harvest';
+    if (p.growth >= 3) return 'growing green stalks';
+    if (p.growth >= 1) return 'tiny shoots';
+    return 'freshly planted seeds';
+  });
+  const plotStr = plots.length > 0 ? `\nPlanted plots: ${plots.join(', ')}` : '';
+
+  return `ACTION: "${actionText}"
+
+CARRYING: ${invStr}
+EDIBLE ITEMS IN INVENTORY: ${inv.filter(([k]) => EDIBLE.includes(k)).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}
+
+REGION RESOURCES:
+  ${resStr}${plotStr}
+
+NEARBY BEINGS: ${othersStr}
+
+What are the mechanical effects?`;
+}
+
+async function interpretAction(actionText, citizen, region, allCitizens) {
+  const prompt = buildInterpreterPrompt(actionText, citizen, region, allCitizens);
+  const result = await callLLM(INTERPRETER_PROMPT, prompt, 'claude-opus');
+
+  if (result?.parsed) {
+    const p = result.parsed;
+    const effectList = Array.isArray(p.effects) ? p.effects : [];
+    return {
+      eating:        effectList.includes('eating'),
+      gathering:     effectList.includes('gathering'),
+      moving:        effectList.includes('moving'),
+      resting:       effectList.includes('resting'),
+      fighting:      effectList.includes('fighting'),
+      crafting:      effectList.includes('crafting'),
+      interacting:   effectList.includes('interacting'),
+      planting:      effectList.includes('planting'),
+      checkingPlots: effectList.includes('checking_plots'),
+      exploring:     effectList.includes('exploring'),
+      targetResource: p.target_resource || null,
+      targetBeing:    p.target_being || null,
+      movementDirection: p.movement_direction || null,
+      craftDescription: p.craft_description || null,
+      _raw: result.raw,
+    };
+  }
+
+  // Fallback: no effects detected
+  console.warn(`  ⚠️ Interpreter failed for "${actionText}", defaulting to nothing`);
+  return {
+    eating: false, gathering: false, moving: false, resting: false,
+    fighting: false, crafting: false, interacting: false,
+    planting: false, checkingPlots: false, exploring: false,
+    targetResource: null, targetBeing: null, movementDirection: null, craftDescription: null,
+  };
+}
+
+// Derive a primary action label for memory tagging (used by compressMemories)
+function primaryEffect(effects) {
+  if (effects.planting)      return 'plant';
+  if (effects.checkingPlots) return 'check_plot';
+  if (effects.fighting)      return 'fight';
+  if (effects.crafting)      return 'craft';
+  if (effects.eating || effects.gathering) return 'gather';
+  if (effects.interacting)   return 'interact';
+  if (effects.moving)        return 'move';
+  if (effects.resting)       return 'rest';
+  if (effects.exploring)     return 'explore';
+  return 'nothing';
+}
+
 // ─── Action resolution ────────────────────────────────────────────────
 
-function resolveActions(citizens, actions, regions) {
+async function resolveActions(citizens, actions, regions) {
   const events = [];
-  // Collect interaction descriptions for exchange
   const interactionDescs = {};
 
   for (const { citizenId, action, raw, prompt } of actions) {
@@ -448,7 +578,10 @@ function resolveActions(citizens, actions, regions) {
     const region = regions[citizen.region];
     const parsed = action;
 
-    // Track presence — all alive citizens in same region see each other
+    // Derive action text from new format field, fall back gracefully
+    const actionText = parsed.action || '';
+
+    // Track encounters — all alive citizens in same region see each other
     const cohabitants = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
     for (const other of cohabitants) {
       if (!citizen.encounters) citizen.encounters = {};
@@ -460,13 +593,73 @@ function resolveActions(citizens, actions, regions) {
       citizen.encounters[other.id].lastTick = actions[0]?.tick;
     }
 
-    switch (parsed.action_type) {
-      case 'gather': {
-        const features = Object.entries(region.features);
-        let gathered = null;
-        const target = (parsed.action_details?.target || '').toLowerCase();
-        for (const [resource, feat] of features) {
-          if (feat.amount > 0 && (target.includes(resource) || target.includes(feat.description?.split(' ')[0]?.toLowerCase()))) {
+    // Interpret the free-form action description via LLM
+    console.log(`  🧠 Interpreting ${citizen.name}'s action: "${actionText}"`);
+    const fx = await interpretAction(actionText, citizen, region, citizens);
+
+    // ── Multiple effects can fire from one action ──────────────────────
+
+    let didSomething = false;
+
+    // 1. PLANTING: push seeds into earth
+    if (fx.planting) {
+      const hasGrain = (citizen.inventory.grain || 0) >= 1;
+      const regionHasGrain = region.features?.grain?.amount >= 1;
+      if (hasGrain || regionHasGrain) {
+        if (hasGrain) {
+          citizen.inventory.grain -= 1;
+          if (citizen.inventory.grain <= 0) delete citizen.inventory.grain;
+        } else {
+          region.features.grain.amount -= 1;
+        }
+        if (!region.plots) region.plots = [];
+        region.plots.push({
+          plantedBy: citizen.id,
+          plantedByName: citizen.name,
+          plantedTick: actions[0]?.tick || 0,
+          growth: 0,
+          harvests: 0,
+        });
+        citizen._lastOutcome = 'You pushed seeds into the soft earth and covered them. Something about this feels important — like the ground accepted what you gave it.';
+        events.push({ type: 'plant', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt down and pushed something into the earth, then covered it carefully.` });
+        console.log(`  🌱 FARMING: ${citizen.name} planted seeds in ${region.name}`);
+        didSomething = true;
+      }
+    }
+
+    // 2. CHECKING PLOTS: examine growing seeds
+    if (fx.checkingPlots && region.plots && region.plots.length > 0) {
+      const bestPlot = region.plots.reduce((a, b) => b.growth > a.growth ? b : a, region.plots[0]);
+      if (bestPlot.growth >= 5) {
+        citizen._lastOutcome = 'You went back to the place where seeds were pushed into the earth. Tall plants with heavy seed heads now stand there — they grew! Something you put in the ground became food. This changes everything.';
+      } else if (bestPlot.growth >= 3) {
+        citizen._lastOutcome = 'You went back to where seeds were buried. Green stalks are pushing up from the earth, taller than before. Something is happening. The seeds are becoming plants.';
+      } else if (bestPlot.growth >= 1) {
+        citizen._lastOutcome = 'You went back to where seeds were pushed into the earth. Tiny green shoots are poking through the soil. Something is growing.';
+      } else {
+        citizen._lastOutcome = 'You looked at the place where seeds were pushed into the earth. The ground looks the same. Nothing has changed yet.';
+      }
+      events.push({ type: 'check_plot', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText });
+      region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt by a patch of earth, examining something growing there.` });
+      didSomething = true;
+    }
+
+    // 3. GATHERING: pick up resources from the region into inventory.
+    // When eating is also intended, prefer edible resources so they can be eaten next.
+    if (fx.gathering) {
+      const features = Object.entries(region.features);
+      let gathered = null;
+      const descLower = actionText.toLowerCase();
+
+      // First pass: match by interpreter's target resource, action text, or prefer edible when eating too
+      for (const [resource, feat] of features) {
+        if (feat.amount > 0) {
+          const interpreterMatch = fx.targetResource && resource.includes(fx.targetResource.toLowerCase());
+          const nameMatch = descLower.includes(resource) ||
+            (feat.description && descLower.includes(feat.description.split(' ')[0].toLowerCase()));
+          const ediblePreferred = fx.eating && EDIBLE.includes(resource);
+          if (interpreterMatch || nameMatch || ediblePreferred) {
             const hasTool = (citizen.inventory.stone_tool || 0) > 0;
             const amount = Math.min(hasTool ? 4 : 2, feat.amount);
             feat.amount -= amount;
@@ -475,244 +668,213 @@ function resolveActions(citizens, actions, regions) {
             break;
           }
         }
-        if (!gathered) {
-          for (const [resource, feat] of features) {
-            if (feat.amount > 0) {
-              const hasTool = (citizen.inventory.stone_tool || 0) > 0;
-              const amount = Math.min(hasTool ? 4 : 2, feat.amount);
-              feat.amount -= amount;
-              citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
-              gathered = { resource, amount };
-              break;
-            }
-          }
-        }
-        if (gathered) {
-          citizen._lastOutcome = `Your hands found something. You picked up ${gathered.amount} ${gathered.resource}. You are now carrying it.`;
-          // If gathering crops, mark a harvest on a mature plot
-          if (gathered.resource === 'crops' && region.plots) {
-            const maturePlot = region.plots.find(p => p.growth >= 5 && p.harvests < 3);
-            if (maturePlot) {
-              maturePlot.harvests += 1;
-              maturePlot.growth = 2; // regrows from partial
-              console.log(`  🌾 HARVEST: ${citizen.name} harvested crops in ${region.name} (harvest ${maturePlot.harvests}/3)`);
-            }
-          }
-          events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource: gathered.resource, amount: gathered.amount, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) bent down, picked something up from the ground, and kept it.` });
-        } else {
-          citizen._lastOutcome = 'You searched but your hands found nothing. There was nothing here to pick up.';
-          events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: 'Found nothing to gather.' });
-        }
-        break;
       }
-      case 'move': {
-        const adj = region.adjacent || [];
-        if (adj.length > 0) {
-          const oldRegion = citizen.region;
-          let dest = adj[Math.floor(Math.random() * adj.length)];
-          const target = (parsed.action_details?.target || '').toLowerCase();
-          for (const a of adj) {
-            if (target.includes(a.replace('-', ' ')) || target.includes(a.split('-')[0])) { dest = a; break; }
-          }
-          regions[oldRegion].citizens = regions[oldRegion].citizens.filter(id => id !== citizen.id);
-          regions[oldRegion].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) walked away and disappeared.` });
-          citizen.region = dest;
-          regions[dest].citizens.push(citizen.id);
-          regions[dest].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A new figure (${citizen.physical_description}) arrived from somewhere else.` });
-          const destName = regions[dest]?.name || dest;
-          citizen._lastOutcome = `You walked to a new place. The surroundings are different now — ${regions[dest]?.description?.split('.')[0] || destName}.`;
-          events.push({ type: 'move', citizen: citizen.id, citizenName: citizen.name, from: oldRegion, to: dest, description: parsed.action_description });
-        }
-        break;
-      }
-      case 'rest': {
-        citizen.health = Math.min(citizen.max_health, citizen.health + 1);
-        citizen._lastOutcome = 'You rested. Your body feels slightly better than before.';
-        events.push({ type: 'rest', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) lay down and became still.` });
-        break;
-      }
-      case 'interact': {
-        const others = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
-        if (others.length > 0) {
-          const other = others[Math.floor(Math.random() * others.length)];
-          citizen.relationships[other.id] = (citizen.relationships[other.id] || 0) + 1;
-          other.relationships[citizen.id] = (other.relationships[citizen.id] || 0) + 1;
-          // Store the interaction for content exchange later
-          if (!interactionDescs[citizen.id]) interactionDescs[citizen.id] = [];
-          interactionDescs[citizen.id].push({ targetId: other.id, desc: parsed.action_description });
-          // The other citizen will see what this one did
-          if (!interactionDescs[other.id]) interactionDescs[other.id] = [];
-          interactionDescs[other.id].push({ targetId: citizen.id, desc: `A figure (${citizen.physical_description}) approached you. They: ${parsed.action_description}`, incoming: true });
-          citizen._lastOutcome = `You approached the figure (${other.physical_description}). You were close enough to see their face clearly.`;
-          events.push({ type: 'interact', citizen: citizen.id, citizenName: citizen.name, targetId: other.id, targetName: other.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) approached another figure (${other.physical_description}). They were close together.` });
-        } else {
-          citizen._lastOutcome = 'You looked around for another being but no one was nearby.';
-        }
-        break;
-      }
-      case 'explore': {
-        const desc = (parsed.action_description || '').toLowerCase();
-        const isActuallyGathering = desc.match(/pick|grab|take|pull|eat|consume|put.*(mouth|eat)|collect|scoop|catch|pluck|harvest|search.*food|search.*edible|search.*eat|find.*food|find.*edible|gather|forag|hungr|desper.*food|urgent.*food/);
-        const isEdgeExploring = desc.match(/beyond|edge|horizon|far|border|new.*land|unknown|distant|leave|further|farthest|unexplored|past.*the|over.*hill|what.*lies|venture|wander.*away|walk.*away|keep.*going/);
-        const isCheckingPlots = desc.match(/check.*seed|check.*plant|check.*grow|look.*seed|look.*plant|look.*sprout|return.*where.*plant|back.*where.*seed|see.*if.*grow|examine.*soil|examine.*earth.*where/);
 
-        if (isCheckingPlots && region.plots && region.plots.length > 0) {
-          const bestPlot = region.plots.reduce((a, b) => b.growth > a.growth ? b : a, region.plots[0]);
-          if (bestPlot.growth >= 5) {
-            citizen._lastOutcome = 'You went back to the place where seeds were pushed into the earth. Tall plants with heavy seed heads now stand there — they grew! Something you put in the ground became food. This changes everything.';
-          } else if (bestPlot.growth >= 3) {
-            citizen._lastOutcome = 'You went back to where seeds were buried. Green stalks are pushing up from the earth, taller than before. Something is happening. The seeds are becoming plants.';
-          } else if (bestPlot.growth >= 1) {
-            citizen._lastOutcome = 'You went back to where seeds were pushed into the earth. Tiny green shoots are poking through the soil. Something is growing.';
-          } else {
-            citizen._lastOutcome = 'You looked at the place where seeds were pushed into the earth. The ground looks the same. Nothing has changed yet.';
+      // Second pass: take the first available resource
+      if (!gathered) {
+        for (const [resource, feat] of features) {
+          if (feat.amount > 0) {
+            const hasTool = (citizen.inventory.stone_tool || 0) > 0;
+            const amount = Math.min(hasTool ? 4 : 2, feat.amount);
+            feat.amount -= amount;
+            citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
+            gathered = { resource, amount };
+            break;
           }
-          events.push({ type: 'check_plot', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt by a patch of earth, examining something growing there.` });
-        } else if (isActuallyGathering) {
-          const features = Object.entries(region.features);
-          let found = false;
-          for (const [resource, feat] of features) {
-            if (feat.amount > 0) {
-              const amount = Math.min(2, feat.amount);
-              feat.amount -= amount;
-              citizen.inventory[resource] = (citizen.inventory[resource] || 0) + amount;
-              citizen._lastOutcome = `While searching, your hands found something — ${amount} ${resource}. You picked it up and kept it.`;
-              events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource, amount, region: citizen.region, description: parsed.action_description });
-              region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) searched around, found something on the ground, and picked it up.` });
-              found = true;
-              break;
-            }
-          }
-          if (!found) {
-            citizen._lastOutcome = 'You searched desperately but found nothing to pick up or eat. Your hands came up empty.';
-            events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          }
-        } else if (isEdgeExploring && Math.random() < (0.08 + (citizen.skills.perception || 1) * 0.04)) {
-          // Discovery! Generate new region
-          const newRegion = generateNewRegion(region, regions);
-          if (newRegion) {
-            // Add adjacency both ways
-            region.adjacent.push(newRegion.id);
-            newRegion.adjacent.push(region.id);
-            // Write new region
-            regions[newRegion.id] = newRegion;
-            writeJSON(join(WORLD_DIR, 'regions', `${newRegion.id}.json`), newRegion);
-            // Update current region file with new adjacency
-            writeJSON(join(WORLD_DIR, 'regions', `${region.id}.json`), region);
+        }
+      }
 
-            citizen._lastOutcome = `You ventured far beyond the familiar ground. The terrain changed — you found a new place: ${newRegion.description.split('.')[0]}. You could travel there.`;
-            events.push({ type: 'discovery', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, newRegion: newRegion.id, description: `${citizen.name} discovered new land: ${newRegion.name}` });
-            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) returned from far away, seeming excited about something.` });
-            console.log(`  🗺️ DISCOVERY: ${citizen.name} found ${newRegion.name} (${newRegion.terrain})`);
-          } else {
-            citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
-            events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
+      if (gathered) {
+        // If gathering crops, mark a harvest on a mature plot
+        if (gathered.resource === 'crops' && region.plots) {
+          const maturePlot = region.plots.find(p => p.growth >= 5 && p.harvests < 3);
+          if (maturePlot) {
+            maturePlot.harvests += 1;
+            maturePlot.growth = 2;
+            console.log(`  🌾 HARVEST: ${citizen.name} harvested crops in ${region.name} (harvest ${maturePlot.harvests}/3)`);
           }
-        } else {
-          citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
-          events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
         }
-        break;
+        citizen._lastOutcome = `Your hands found something. You picked up ${gathered.amount} ${gathered.resource}. You are now carrying it.`;
+        events.push({ type: 'gather', citizen: citizen.id, citizenName: citizen.name, resource: gathered.resource, amount: gathered.amount, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) bent down, picked something up from the ground, and kept it.` });
+        didSomething = true;
+      } else {
+        citizen._lastOutcome = 'You searched but your hands found nothing. There was nothing here to pick up.';
+        events.push({ type: 'gather_failed', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: 'Found nothing to gather.' });
+        didSomething = true;
       }
-      case 'fight': {
-        const others = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
-        if (others.length > 0) {
-          const target = others[Math.floor(Math.random() * others.length)];
-          const attackerPower = citizen.skills.strength + Math.random() * 3;
-          const defenderPower = target.skills.strength + Math.random() * 3;
-          if (attackerPower > defenderPower) {
-            target.health -= 2;
-            const lootable = Object.entries(target.inventory).filter(([, v]) => v > 0);
-            let loot = null;
-            if (lootable.length > 0) {
-              const [item] = lootable[Math.floor(Math.random() * lootable.length)];
-              target.inventory[item]--;
-              citizen.inventory[item] = (citizen.inventory[item] || 0) + 1;
-              loot = item;
-            }
-            citizen._lastOutcome = `You struck the other figure and overpowered them. They fell back, hurt.${loot ? ` You took ${loot} from them.` : ''}`;
-            target._lastOutcome = `A figure attacked you. You were overpowered and hurt. Your body aches from the blows.${loot ? ` They took something from you.` : ''}`;
-            events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: citizen.id, loot, region: citizen.region, description: parsed.action_description });
-          } else {
-            citizen.health -= 2;
-            citizen._lastOutcome = 'You attacked another figure but they were stronger. You were hurt and pushed back.';
-            target._lastOutcome = `A figure (${citizen.physical_description}) attacked you but you fought them off. They seemed weaker than you.`;
-            events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: target.id, loot: null, region: citizen.region, description: parsed.action_description });
-          }
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `Two figures clashed violently — (${citizen.physical_description}) and (${target.physical_description}).` });
-        }
-        break;
-      }
-      case 'make': {
-        const makeDesc = (parsed.action_description || '').toLowerCase();
-        const isPlanting = makeDesc.match(/plant|seed|sow|push.*into.*earth|push.*into.*ground|push.*into.*soil|bury.*seed|put.*seed|press.*seed|dig.*soil|dig.*earth|poke.*hole.*seed/);
-        const hasGrain = (citizen.inventory.grain || 0) >= 1;
+    }
 
-        const regionHasGrain = region.features?.grain?.amount >= 1;
-        if (isPlanting && (hasGrain || regionHasGrain)) {
-          // Citizen is planting seeds — consume from inventory first, else from region
-          if (hasGrain) {
-            citizen.inventory.grain -= 1;
-            if (citizen.inventory.grain <= 0) delete citizen.inventory.grain;
-          } else {
-            region.features.grain.amount -= 1;
-          }
-          if (!region.plots) region.plots = [];
-          region.plots.push({
-            plantedBy: citizen.id,
-            plantedByName: citizen.name,
-            plantedTick: actions[0]?.tick || 0,
-            growth: 0,       // 0-5, harvestable at 5
-            harvests: 0,     // times harvested (max 3 before depleted)
-          });
-          citizen._lastOutcome = 'You pushed seeds into the soft earth and covered them. Something about this feels important — like the ground accepted what you gave it.';
-          events.push({ type: 'plant', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) knelt down and pushed something into the earth, then covered it carefully.` });
-          console.log(`  🌱 FARMING: ${citizen.name} planted seeds in ${region.name}`);
+    // 4. EATING: consume one edible item from inventory, food += 1.
+    // Runs after GATHERING so "grab + eat" works in a single action.
+    if (fx.eating) {
+      const edibleItems = Object.entries(citizen.inventory).filter(([k, v]) => EDIBLE.includes(k) && v > 0);
+      if (edibleItems.length > 0) {
+        const [food] = edibleItems[0];
+        citizen.inventory[food]--;
+        if (citizen.inventory[food] <= 0) delete citizen.inventory[food];
+        citizen.food = Math.min(5, (citizen.food || 0) + 1);
+        const foodNames = { grain: 'seeds', fish: 'fish', herbs: 'plants', fresh_water: 'water', crops: 'food from the earth' };
+        citizen._lastOutcome = (citizen._lastOutcome ? citizen._lastOutcome + '\n' : '') +
+          `You put ${foodNames[food] || food} in your mouth and chewed. Your stomach feels better.`;
+        events.push({ type: 'eat', citizen: citizen.id, citizenName: citizen.name, food, region: citizen.region, description: actionText });
+        didSomething = true;
+      }
+      // If nothing edible in hand, the eating intent yields no mechanical effect (citizen just mimed the motion)
+    }
+
+    // 5. CRAFTING: combining/building/making things
+    if (fx.crafting && !fx.planting) {
+      const craftText = fx.craftDescription || actionText;
+      const recipe = tryRecipe(citizen, craftText);
+      if (recipe) {
+        for (const [mat, qty] of Object.entries(recipe.recipe.needs)) {
+          citizen.inventory[mat] -= qty;
+          if (citizen.inventory[mat] <= 0) delete citizen.inventory[mat];
+        }
+        if (recipe.recipe.effect === 'shelter') {
+          citizen.has_shelter = true;
+        } else if (recipe.recipe.effect === 'heal') {
+          citizen.health = Math.min(citizen.max_health, citizen.health + 3);
         } else {
-          // Try crafting recipes
-          const recipe = tryRecipe(citizen, parsed.action_description || '');
-          if (recipe) {
-            // Consume materials
-            for (const [mat, qty] of Object.entries(recipe.recipe.needs)) {
-              citizen.inventory[mat] -= qty;
-              if (citizen.inventory[mat] <= 0) delete citizen.inventory[mat];
-            }
-            // Apply effects
-            if (recipe.recipe.effect === 'shelter') {
-              citizen.has_shelter = true;
-            } else if (recipe.recipe.effect === 'heal') {
-              citizen.health = Math.min(citizen.max_health, citizen.health + 3);
-            } else {
-              // Add crafted item to inventory
-              citizen.inventory[recipe.itemName] = (citizen.inventory[recipe.itemName] || 0) + 1;
-            }
-            citizen._lastOutcome = recipe.recipe.desc;
-            events.push({ type: 'craft', citizen: citizen.id, citizenName: citizen.name, item: recipe.itemName, region: citizen.region, description: parsed.action_description });
-            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) worked with objects in their hands, making something new.` });
-            console.log(`  🔨 CRAFT: ${citizen.name} made ${recipe.itemName}`);
-          } else {
-            citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
-            events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description });
-            region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+          citizen.inventory[recipe.itemName] = (citizen.inventory[recipe.itemName] || 0) + 1;
+        }
+        citizen._lastOutcome = recipe.recipe.desc;
+        events.push({ type: 'craft', citizen: citizen.id, citizenName: citizen.name, item: recipe.itemName, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) worked with objects in their hands, making something new.` });
+        console.log(`  🔨 CRAFT: ${citizen.name} made ${recipe.itemName}`);
+        didSomething = true;
+      } else {
+        citizen._lastOutcome = 'You manipulated objects with your hands. You are not sure if you made anything useful.';
+        events.push({ type: 'make', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) manipulated objects with their hands, assembling something.` });
+        didSomething = true;
+      }
+    }
+
+    // 6. FIGHTING: attacking another being
+    if (fx.fighting) {
+      const others = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
+      if (others.length > 0) {
+        // Try to match the interpreter's target being, otherwise random
+        let target = others[Math.floor(Math.random() * others.length)];
+        if (fx.targetBeing) {
+          const tb = fx.targetBeing.toLowerCase();
+          const matched = others.find(c => c.physical_description.toLowerCase().includes(tb) || tb.includes(c.physical_description.toLowerCase().split(' ')[0]));
+          if (matched) target = matched;
+        }
+        const attackerPower = citizen.skills.strength + Math.random() * 3;
+        const defenderPower = target.skills.strength + Math.random() * 3;
+        if (attackerPower > defenderPower) {
+          target.health -= 2;
+          const lootable = Object.entries(target.inventory).filter(([, v]) => v > 0);
+          let loot = null;
+          if (lootable.length > 0) {
+            const [item] = lootable[Math.floor(Math.random() * lootable.length)];
+            target.inventory[item]--;
+            citizen.inventory[item] = (citizen.inventory[item] || 0) + 1;
+            loot = item;
+          }
+          citizen._lastOutcome = `You struck the other figure and overpowered them. They fell back, hurt.${loot ? ` You took ${loot} from them.` : ''}`;
+          target._lastOutcome = `A figure attacked you. You were overpowered and hurt. Your body aches from the blows.${loot ? ` They took something from you.` : ''}`;
+          events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: citizen.id, loot, region: citizen.region, description: actionText });
+        } else {
+          citizen.health -= 2;
+          citizen._lastOutcome = 'You attacked another figure but they were stronger. You were hurt and pushed back.';
+          target._lastOutcome = `A figure (${citizen.physical_description}) attacked you but you fought them off. They seemed weaker than you.`;
+          events.push({ type: 'fight', citizen: citizen.id, citizenName: citizen.name, targetId: target.id, targetName: target.name, winner: target.id, loot: null, region: citizen.region, description: actionText });
+        }
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `Two figures clashed violently — (${citizen.physical_description}) and (${target.physical_description}).` });
+        didSomething = true;
+      }
+    }
+
+    // 7. INTERACTING: social approach/gesture (only if not fighting)
+    if (fx.interacting && !fx.fighting) {
+      const others = citizens.filter(c => c.alive && c.region === citizen.region && c.id !== citizen.id);
+      if (others.length > 0) {
+        const other = others[Math.floor(Math.random() * others.length)];
+        citizen.relationships[other.id] = (citizen.relationships[other.id] || 0) + 1;
+        other.relationships[citizen.id] = (other.relationships[citizen.id] || 0) + 1;
+        if (!interactionDescs[citizen.id]) interactionDescs[citizen.id] = [];
+        interactionDescs[citizen.id].push({ targetId: other.id, desc: actionText });
+        if (!interactionDescs[other.id]) interactionDescs[other.id] = [];
+        interactionDescs[other.id].push({ targetId: citizen.id, desc: `A figure (${citizen.physical_description}) approached you. They: ${actionText}`, incoming: true });
+        citizen._lastOutcome = `You approached the figure (${other.physical_description}). You were close enough to see their face clearly.`;
+        events.push({ type: 'interact', citizen: citizen.id, citizenName: citizen.name, targetId: other.id, targetName: other.name, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) approached another figure (${other.physical_description}). They were close together.` });
+        didSomething = true;
+      } else {
+        citizen._lastOutcome = 'You looked around for another being but no one was nearby.';
+      }
+    }
+
+    // 8. MOVING: travelling to another region
+    if (fx.moving) {
+      const adj = region.adjacent || [];
+      if (adj.length > 0) {
+        const oldRegion = citizen.region;
+        let dest = adj[Math.floor(Math.random() * adj.length)];
+        // Check if the action text or interpreter mentions a specific destination
+        const searchText = (actionText + ' ' + (fx.movementDirection || '')).toLowerCase();
+        for (const a of adj) {
+          if (searchText.includes(a.replace(/-/g, ' ')) || searchText.includes(a.split('-')[0])) {
+            dest = a; break;
           }
         }
-        break;
+        regions[oldRegion].citizens = regions[oldRegion].citizens.filter(id => id !== citizen.id);
+        regions[oldRegion].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) walked away and disappeared.` });
+        citizen.region = dest;
+        regions[dest].citizens.push(citizen.id);
+        regions[dest].recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A new figure (${citizen.physical_description}) arrived from somewhere else.` });
+        citizen._lastOutcome = `You walked to a new place. The surroundings are different now — ${regions[dest]?.description?.split('.')[0] || dest}.`;
+        events.push({ type: 'move', citizen: citizen.id, citizenName: citizen.name, from: oldRegion, to: dest, description: actionText });
+        didSomething = true;
       }
-      default: {
-        citizen._lastOutcome = 'You stood still and did nothing. Time passed.';
-        events.push({ type: 'nothing', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: parsed.action_description || 'Did nothing.' });
-        break;
+    }
+
+    // 9. RESTING: lying down, sleeping, healing
+    if (fx.resting && !fx.moving) {
+      citizen.health = Math.min(citizen.max_health, citizen.health + 1);
+      citizen._lastOutcome = 'You rested. Your body feels slightly better than before.';
+      events.push({ type: 'rest', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText });
+      region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) lay down and became still.` });
+      didSomething = true;
+    }
+
+    // 10. EXPLORING: wandering toward the edge, possible region discovery
+    if (fx.exploring && !fx.moving) {
+      if (Math.random() < (0.08 + (citizen.skills.perception || 1) * 0.04)) {
+        const newRegion = generateNewRegion(region, regions);
+        if (newRegion) {
+          region.adjacent.push(newRegion.id);
+          newRegion.adjacent.push(region.id);
+          regions[newRegion.id] = newRegion;
+          writeJSON(join(WORLD_DIR, 'regions', `${newRegion.id}.json`), newRegion);
+          writeJSON(join(WORLD_DIR, 'regions', `${region.id}.json`), region);
+          citizen._lastOutcome = `You ventured far beyond the familiar ground. The terrain changed — you found a new place: ${newRegion.description.split('.')[0]}. You could travel there.`;
+          events.push({ type: 'discovery', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, newRegion: newRegion.id, description: `${citizen.name} discovered new land: ${newRegion.name}` });
+          region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) returned from far away, seeming excited about something.` });
+          console.log(`  🗺️ DISCOVERY: ${citizen.name} found ${newRegion.name} (${newRegion.terrain})`);
+          didSomething = true;
+        }
       }
+      if (!didSomething) {
+        citizen._lastOutcome = 'You looked around and examined your surroundings. You did not pick anything up or find anything new.';
+        events.push({ type: 'explore', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText });
+        region.recent_events.push({ actorId: citizen.id, who: citizen.physical_description, description: `A figure (${citizen.physical_description}) wandered around, examining things closely.` });
+        didSomething = true;
+      }
+    }
+
+    // 11. DEFAULT: nothing matched — stood still
+    if (!didSomething) {
+      citizen._lastOutcome = 'You stood still and did nothing. Time passed.';
+      events.push({ type: 'nothing', citizen: citizen.id, citizenName: citizen.name, region: citizen.region, description: actionText || 'Did nothing.' });
     }
   }
 
-  // Process interaction content exchange — add to last outcome
+  // Process interaction content exchange
   for (const citizen of citizens) {
     if (!citizen.alive) continue;
     const incoming = (interactionDescs[citizen.id] || []).filter(i => i.incoming);
@@ -722,8 +884,7 @@ function resolveActions(citizens, actions, regions) {
     }
   }
 
-  // ─── Reproduction check ───────────────────────────────────────────
-  // When two bonded, healthy, well-fed citizens interact — small chance of new life
+  // ─── Reproduction check ───────────────────────────────────────────────
   const interactPairs = events
     .filter(e => e.type === 'interact')
     .map(e => ({ a: citizens.find(c => c.id === e.citizen), b: citizens.find(c => c.id === e.targetId) }))
@@ -739,23 +900,17 @@ function resolveActions(citizens, actions, regions) {
       a.food > 2 && b.food > 2 &&
       Math.random() < 0.12
     ) {
-      // New life
       const child = spawnOffspring(a, b, regions[a.region]);
       citizens.push(child);
       writeJSON(join(WORLD_DIR, 'citizens', `${child.id}.json`), child);
-
-      // Parents see something
       a._lastOutcome = (a._lastOutcome || '') + '\nA small new being appeared nearby. It is tiny and fragile.';
       b._lastOutcome = (b._lastOutcome || '') + '\nA small new being appeared nearby. It is tiny and fragile.';
-
-      // Region event
       const region = regions[a.region];
       region.recent_events.push({
         actorId: child.id,
         who: child.physical_description,
         description: `A small new being (${child.physical_description}) appeared in this place.`,
       });
-
       events.push({
         type: 'birth',
         citizen: child.id,
@@ -767,12 +922,11 @@ function resolveActions(citizens, actions, regions) {
         region: a.region,
         description: `A new being, ${child.name}, appeared near ${a.name} and ${b.name}.`,
       });
-
       console.log(`  🌱 BIRTH: ${child.name} — offspring of ${a.name} & ${b.name}`);
     }
   }
 
-  // Survival costs
+  // ─── Survival costs ───────────────────────────────────────────────────
   for (const citizen of citizens) {
     if (!citizen.alive) continue;
     const region = regions[citizen.region];
@@ -784,7 +938,6 @@ function resolveActions(citizens, actions, regions) {
       if (citizen.inventory[food] <= 0) delete citizen.inventory[food];
       citizen.food = Math.min(5, (citizen.food || 0) + 1);
       citizen._starveTicks = 0;
-      // Feedback — let them learn the connection between carrying food and feeling fed
       const foodNames = { grain: 'seeds', fish: 'fish', herbs: 'plants', fresh_water: 'water', crops: 'food from the earth' };
       citizen._lastOutcome = (citizen._lastOutcome || '') + `\nYou ate some ${foodNames[food] || food} from what you were carrying. Your stomach feels better.`;
     } else {
@@ -880,7 +1033,7 @@ export async function runTick() {
     const prompt = buildCitizenPrompt(citizen, region, citizens);
 
     const result = await callLLM(SYSTEM_PROMPT, prompt, modelKey);
-    const parsed = result?.parsed || { thinking: 'confusion', action_description: 'stands still', action_type: 'nothing', action_details: {}, memory_update: 'Nothing happened.' };
+    const parsed = result?.parsed || { thinking: 'confusion', action: 'stands still', memory_update: 'Nothing happened.' };
 
     thoughts[citizen.id] = {
       citizenName: citizen.name,
@@ -893,16 +1046,28 @@ export async function runTick() {
     actions.push({ citizenId: citizen.id, action: parsed, raw: result?.raw, prompt, tick: clock.tick });
 
     if (parsed.memory_update) {
-      citizen.memory.push({ text: parsed.memory_update, action: parsed.action_type || 'nothing' });
+      // Simple regex for memory tagging only (full interpretation happens in resolveActions)
+      const actionStr = (parsed.action || '').toLowerCase();
+      const memAction =
+        /eat|chew|swallow|drink|mouth/.test(actionStr) ? 'gather' :
+        /pick|grab|collect|gather|take|scoop/.test(actionStr) ? 'gather' :
+        /walk|run|move|travel|leave|head/.test(actionStr) ? 'move' :
+        /rest|sleep|lie\s+down|close.*eyes/.test(actionStr) ? 'rest' :
+        /attack|hit|strike|fight|punch/.test(actionStr) ? 'fight' :
+        /build|craft|make|combine|bind|stack/.test(actionStr) ? 'craft' :
+        /approach|gesture|wave|touch/.test(actionStr) ? 'interact' :
+        /plant|seed.*earth|bury.*seed/.test(actionStr) ? 'plant' :
+        'nothing';
+      citizen.memory.push({ text: parsed.memory_update, action: memAction });
       if (citizen.memory.length > 100) citizen.memory = compressMemories(citizen.memory);
     }
 
-    console.log(`  ${citizen.name} [${getModelConfig(modelKey).short}]: ${parsed.action_type} — ${parsed.action_description}`);
+    console.log(`  ${citizen.name} [${getModelConfig(modelKey).short}]: ${parsed.action || '(no action)'}`);
   });
 
   await Promise.all(promises);
 
-  const events = resolveActions(citizens, actions, regions);
+  const events = await resolveActions(citizens, actions, regions);
 
   writeJSON(join(WORLD_DIR, 'clock.json'), clock);
   for (const [id, region] of Object.entries(regions)) {
