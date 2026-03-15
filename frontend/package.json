@@ -1,0 +1,8 @@
+{
+  "name": "emergent-world-viewer",
+  "type": "module",
+  "dependencies": {
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^3.0.0"
+  }
+}

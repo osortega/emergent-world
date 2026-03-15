@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Emergent World</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0d1117; color:#c8c8d0; font-family:'Courier New',monospace; overflow:hidden; }
+canvas { display:block; touch-action:none; }
+#hud { position:fixed; top:12px; left:12px; z-index:10; }
+#hud .box { background:rgba(13,17,23,.92); border:1px solid #30363d; border-radius:8px; padding:12px 16px; backdrop-filter:blur(8px); }
+#clock { font-size:18px; font-weight:bold; letter-spacing:1px; }
+.season-spring { color:#3fb950; } .season-summer { color:#f0c040; } .season-autumn { color:#d29922; } .season-winter { color:#79c0ff; }
+#population { font-size:13px; margin-top:6px; color:#8b949e; }
+
+#sidebar { position:fixed; top:12px; right:12px; width:300px; max-height:calc(100vh - 24px); overflow-y:auto; z-index:10; }
+#sidebar::-webkit-scrollbar { width:4px; } #sidebar::-webkit-scrollbar-thumb { background:#30363d; border-radius:2px; }
+#citizen-panel { background:rgba(13,17,23,.94); border:1px solid #30363d; border-radius:8px; padding:16px; display:none; backdrop-filter:blur(8px); }
+#citizen-panel h2 { font-size:16px; margin-bottom:10px; }
+.section { margin-bottom:12px; }
+.section h3 { font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:6px; cursor:pointer; user-select:none; }
+.section h3:hover { color:#c9d1d9; }
+.stat { display:flex; justify-content:space-between; font-size:13px; margin:3px 0; }
+.stat .label { color:#8b949e; } .stat .value { color:#e6edf3; }
+.hp-bar { height:8px; background:#21262d; border-radius:4px; margin:6px 0; overflow:hidden; }
+.hp-fill { height:100%; border-radius:4px; transition:width .5s ease; }
+.memory-item { font-size:11px; color:#8b949e; margin:4px 0; padding:5px 8px; background:rgba(255,255,255,.03); border-radius:4px; line-height:1.4; }
+.memory-icon { margin-right:5px; }
+.rel-item { font-size:12px; margin:3px 0; color:#c9d1d9; }
+
+#event-log { position:fixed; bottom:12px; left:12px; right:12px; z-index:10; }
+#event-log .box { background:rgba(13,17,23,.92); border:1px solid #30363d; border-radius:8px; padding:12px 16px; max-height:150px; overflow-y:auto; backdrop-filter:blur(8px); }
+.log-title { font-size:11px; color:#484f58; text-transform:uppercase; letter-spacing:1.5px; margin-bottom:8px; }
+.event { font-size:12px; margin:3px 0; color:#8b949e; } .event .name { color:#79c0ff; } .event .action { color:#7ee787; }
+
+#season-overlay { position:fixed; top:0; left:0; right:0; bottom:0; pointer-events:none; z-index:5; }
+
+/* Mobile */
+@media (max-width: 768px) {
+  #hud .box { padding:8px 10px; }
+  #clock { font-size:14px; }
+  #population { font-size:12px; }
+  #sidebar { position:fixed; bottom:0; left:0; right:0; top:auto; width:100%; max-height:60vh; border-radius:12px 12px 0 0; overflow-y:auto; }
+  #citizen-panel { border-radius:12px 12px 0 0; }
+  #citizen-panel h2 { font-size:18px; }
+  .stat { font-size:14px; }
+  .memory-item { font-size:12px; }
+  .rel-item { font-size:13px; }
+  #event-log { bottom:auto; top:auto; right:12px; position:fixed; bottom:12px; max-width:100%; }
+  #event-log .box { max-height:100px; font-size:13px; }
+  .event { font-size:13px; margin:4px 0; }
+  #close-panel { display:block !important; }
+}
+@media (min-width: 769px) {
+  #event-log { right:324px; }
+  #close-panel { display:none; }
+}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="box">
+    <div id="clock">Tick 0 | <span class="season-spring">Spring</span> | Year 1</div>
+    <div id="population">Population: 0</div>
+  </div>
+</div>
+<div id="sidebar">
+  <div id="citizen-panel">
+    <div id="close-panel" style="display:none;float:right;cursor:pointer;font-size:20px;color:#8b949e;padding:0 4px;" onclick="document.getElementById('citizen-panel').style.display='none';document.getElementById('event-log').style.display='';sel=null;">✕</div>
+    <h2 id="cp-name">—</h2>
+    <div class="section">
+      <div class="hp-bar"><div class="hp-fill" id="cp-hp"></div></div>
+      <div class="stat"><span class="label">Health</span><span class="value" id="cp-hp-text">—</span></div>
+      <div class="stat"><span class="label">Food</span><span class="value" id="cp-food">—</span></div>
+      <div class="stat"><span class="label">Region</span><span class="value" id="cp-region">—</span></div>
+      <div class="stat"><span class="label">Shelter</span><span class="value" id="cp-shelter">—</span></div>
+    </div>
+    <div class="section"><h3 onclick="toggle('cp-inv')">▸ Inventory</h3><div id="cp-inv" style="display:none"></div></div>
+    <div class="section"><h3 onclick="toggle('cp-skills')">▸ Skills</h3><div id="cp-skills" style="display:none"></div></div>
+    <div class="section"><h3 onclick="toggle('cp-rels')">▸ Relationships</h3><div id="cp-rels" style="display:none"></div></div>
+    <div class="section"><h3 onclick="toggle('cp-mems')">▸ Memories</h3><div id="cp-mems" style="display:none"></div></div>
+  </div>
+</div>
+<div id="event-log">
+  <div class="box">
+    <div class="log-title">Events</div>
+    <div id="events"></div>
+  </div>
+</div>
+<canvas id="season-overlay"></canvas>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// CONFIG
+// ═══════════════════════════════════════════════════════════════
+const TW = 64, TH = 32, DEPTH = 12;
+const CHUNK = 20;
+const GAP = 0;
+
+// Region positions — fixed for known regions, dynamically assigned for discoveries
+const REGION_POS = {
+  'northern-forest': {cx:0,cy:0},
+  'river-valley':    {cx:1,cy:0},
+  'mountain-pass':   {cx:2,cy:0},
+  'coastal-plains':  {cx:0,cy:1},
+  'salt-marshes':    {cx:1,cy:1},
+};
+const SPIRAL_POS = [{cx:2,cy:1},{cx:0,cy:2},{cx:1,cy:2},{cx:2,cy:2},{cx:3,cy:0},{cx:3,cy:1},{cx:3,cy:2},
+  {cx:0,cy:3},{cx:1,cy:3},{cx:2,cy:3},{cx:3,cy:3},{cx:4,cy:0},{cx:4,cy:1},{cx:4,cy:2}];
+let spiralIdx = 0;
+
+// Maps terrain strings from region JSON to palette keys
+const TERRAIN_MAP = {
+  forest:'forest', mountain:'mountain', valley:'valley', coast:'coastal', coastal:'coastal',
+  marsh:'marsh', plains:'plains', cave:'cave', jungle:'jungle', tundra:'tundra',
+  oasis:'oasis', cliffs:'cliffs', swamp:'swamp', volcanic:'volcanic',
+};
+const DEFAULT_TERRAIN_MAP = {
+  'northern-forest':'forest','river-valley':'valley','mountain-pass':'mountain',
+  'coastal-plains':'coastal','salt-marshes':'marsh',
+};
+
+function getRegionLayout(rid, terrain) {
+  if (!REGION_POS[rid]) {
+    REGION_POS[rid] = SPIRAL_POS[spiralIdx++] || {cx:spiralIdx,cy:4};
+  }
+  const t = DEFAULT_TERRAIN_MAP[rid] || TERRAIN_MAP[terrain] || 'plains';
+  return { ...REGION_POS[rid], terrain: t };
+}
+
+let REGIONS = {}; // populated dynamically from API
+
+const PALETTE = {
+  forest:  { top:0x2d5a1e, side:0x1a3a12, dark:0x143010, water:null, accent:0x1e4a15 },
+  mountain:{ top:0x6b6b6b, side:0x4a4a4a, dark:0x3a3a3a, water:null, accent:0x555555 },
+  valley:  { top:0x4a8a2a, side:0x2a5a1a, dark:0x1a4a10, water:0x2a5a8a, accent:0x3a7a25 },
+  coastal: { top:0xa89a5a, side:0x7a6a3a, dark:0x5a4a2a, water:0x1a5a9a, accent:0x8a7a4a },
+  marsh:   { top:0x4a5a3a, side:0x2a3a22, dark:0x1a2a18, water:0x2a5555, accent:0x3a4a2a },
+  plains:  { top:0x7a9a3a, side:0x5a7a2a, dark:0x4a6a1a, water:null, accent:0x6a8a30 },
+  cave:    { top:0x3a3a4a, side:0x2a2a3a, dark:0x1a1a2a, water:null, accent:0x333344 },
+  jungle:  { top:0x1a6a1a, side:0x0a4a0a, dark:0x083808, water:null, accent:0x158015 },
+  tundra:  { top:0x8a9aaa, side:0x6a7a8a, dark:0x5a6a7a, water:null, accent:0x7a8a9a },
+  oasis:   { top:0x5aaa3a, side:0x3a8a2a, dark:0x2a6a1a, water:0x2a7aaa, accent:0x4a9a30 },
+  cliffs:  { top:0x8a7a6a, side:0x5a4a3a, dark:0x3a2a1a, water:0x1a5a9a, accent:0x6a5a4a },
+  swamp:   { top:0x3a4a2a, side:0x2a3a1a, dark:0x1a2a0a, water:0x2a4a3a, accent:0x2a3820 },
+  volcanic:{ top:0x4a2a2a, side:0x3a1a1a, dark:0x2a0a0a, water:null, accent:0x5a2020 },
+};
+
+const CCOLORS = [0xe74c3c,0x58a6ff,0x3fb950,0xf0c040,0xbc8cff,0x1abc9c,0xe67e22,0xf0f6fc,0xff6b9d,0x00d4aa,
+  0xff6666,0x66bbff,0x66ff99,0xffbb66,0xbb66ff,0x66ffdd,0xff9966,0xddddff,0xff99bb,0x99ffcc];
+
+const ICONS = { gather:'🫳',fight:'⚔️',move:'🚶',rest:'😴',craft:'🔨',make:'🔨',explore:'🔍',interact:'💬',nothing:'💭',death:'💀',birth:'🌱',exposure:'❄️',starvation:'🍖',terrain_damage:'⛰️',discovery:'🗺️' };
+
+// ═══════════════════════════════════════════════════════════════
+// PIXI SETUP
+// ═══════════════════════════════════════════════════════════════
+const app = new PIXI.Application({ resizeTo:window, backgroundColor:0x0d1117, antialias:true });
+document.body.insertBefore(app.view, document.body.firstChild);
+const world = new PIXI.Container();
+const terrainLayer = new PIXI.Container();
+const featureLayer = new PIXI.Container();
+const structureLayer = new PIXI.Container();
+const citizenLayer = new PIXI.Container();
+world.addChild(terrainLayer, featureLayer, structureLayer, citizenLayer);
+app.stage.addChild(world);
+world.x = window.innerWidth / 2;
+world.y = 60;
+world.scale.set(window.innerWidth < 768 ? 0.35 : 0.5);
+
+// Camera — mouse + touch with pinch-to-zoom
+let drag=false, ds={x:0,y:0}, ws={x:0,y:0}, moved=false;
+let lastPinchDist=0, pinching=false;
+
+app.view.addEventListener('pointerdown', e => { drag=true; moved=false; ds={x:e.clientX,y:e.clientY}; ws={x:world.x,y:world.y}; });
+window.addEventListener('pointermove', e => { if(!drag||pinching) return; if(Math.abs(e.clientX-ds.x)+Math.abs(e.clientY-ds.y)>5) moved=true; world.x=ws.x+(e.clientX-ds.x); world.y=ws.y+(e.clientY-ds.y); });
+window.addEventListener('pointerup', () => drag=false);
+app.view.addEventListener('wheel', e => {
+  e.preventDefault();
+  const f=e.deltaY>0?.92:1.08, ns=Math.max(.25,Math.min(3,world.scale.x*f));
+  const r=app.view.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const wx=(mx-world.x)/world.scale.x, wy=(my-world.y)/world.scale.y;
+  world.scale.set(ns); world.x=mx-wx*ns; world.y=my-wy*ns;
+}, {passive:false});
+
+// Pinch-to-zoom
+app.view.addEventListener('touchstart', e => {
+  if(e.touches.length===2) {
+    pinching=true; drag=false;
+    lastPinchDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+  }
+}, {passive:true});
+app.view.addEventListener('touchmove', e => {
+  if(e.touches.length===2 && pinching) {
+    e.preventDefault();
+    const dist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX, e.touches[0].clientY-e.touches[1].clientY);
+    const f = dist/lastPinchDist;
+    const ns = Math.max(.25, Math.min(3, world.scale.x*f));
+    const mx = (e.touches[0].clientX+e.touches[1].clientX)/2;
+    const my = (e.touches[0].clientY+e.touches[1].clientY)/2;
+    const wx=(mx-world.x)/world.scale.x, wy=(my-world.y)/world.scale.y;
+    world.scale.set(ns); world.x=mx-wx*ns; world.y=my-wy*ns;
+    lastPinchDist = dist;
+  }
+}, {passive:false});
+app.view.addEventListener('touchend', e => { if(e.touches.length<2) pinching=false; });
+
+function iso(tx,ty) { return { x:(tx-ty)*(TW/2), y:(tx+ty)*(TH/2) }; }
+
+// ═══════════════════════════════════════════════════════════════
+// TERRAIN GENERATION (with height noise)
+// ═══════════════════════════════════════════════════════════════
+function noise(x,y) { return (Math.sin(x*12.9898+y*78.233)*43758.5453)%1; }
+function heightAt(rid,r,c) {
+  if(rid==='mountain') return 2+Math.floor(Math.abs(noise(r*.3,c*.3))*3);
+  if(rid==='valley' && c>=9&&c<=11) return -1;
+  if(rid==='coastal' && r>=CHUNK-5) return -1;
+  if(rid==='marsh' && (r*3+c*5)%7<2) return -1;
+  return Math.floor(Math.abs(noise(r*.5+.1,c*.7+.2))*1.5);
+}
+
+// Blend colors at region edges for seamless transitions
+function getNeighborRegion(cx, cy, r, c) {
+  // Check if we're at an edge and what region is adjacent
+  let ncx = cx, ncy = cy;
+  if(c < 3) ncx = cx - 1;
+  else if(c >= CHUNK - 3) ncx = cx + 1;
+  if(r < 3) ncy = cy - 1;
+  else if(r >= CHUNK - 3) ncy = cy + 1;
+  if(ncx === cx && ncy === cy) return null;
+  // Find the region at that grid position
+  for(const [rid, cfg] of Object.entries(REGIONS)) {
+    if(cfg.cx === ncx && cfg.cy === ncy) return cfg.terrain;
+  }
+  return null;
+}
+
+function blendColor(c1, c2, t) {
+  const r1=(c1>>16)&0xff, g1=(c1>>8)&0xff, b1=c1&0xff;
+  const r2=(c2>>16)&0xff, g2=(c2>>8)&0xff, b2=c2&0xff;
+  const r=Math.round(r1+(r2-r1)*t), g=Math.round(g1+(g2-g1)*t), b=Math.round(b1+(b2-b1)*t);
+  return (r<<16)|(g<<8)|b;
+}
+
+function getBlendedPalette(terrain, cx, cy, r, c) {
+  const pal = PALETTE[terrain];
+  const neighbor = getNeighborRegion(cx, cy, r, c);
+  if(!neighbor) return pal;
+  const npal = PALETTE[neighbor];
+  // How close to edge (0 = at edge, 1 = 3 tiles in)
+  let edgeDist = Math.min(
+    c < 3 ? c/3 : c >= CHUNK-3 ? (CHUNK-1-c)/3 : 1,
+    r < 3 ? r/3 : r >= CHUNK-3 ? (CHUNK-1-r)/3 : 1
+  );
+  edgeDist = Math.max(0, Math.min(1, edgeDist));
+  return {
+    top: blendColor(npal.top, pal.top, edgeDist),
+    side: blendColor(npal.side, pal.side, edgeDist),
+    dark: blendColor(npal.dark, pal.dark, edgeDist),
+    feature: pal.feature,
+    water: pal.water,
+    accent: blendColor(npal.accent, pal.accent, edgeDist),
+  };
+}
+
+function tileColor(base, variation) {
+  const r = ((base>>16)&0xff) + variation;
+  const g = ((base>>8)&0xff) + variation;
+  const b = (base&0xff) + variation;
+  return (Math.max(0,Math.min(255,r))<<16)|(Math.max(0,Math.min(255,g))<<8)|Math.max(0,Math.min(255,b));
+}
+
+function drawTile3D(g, x, y, topCol, sideCol, h) {
+  const elev = h * DEPTH;
+  // Top face
+  g.beginFill(topCol);
+  g.moveTo(x, y-TH/2-elev); g.lineTo(x+TW/2, y-elev); g.lineTo(x, y+TH/2-elev); g.lineTo(x-TW/2, y-elev);
+  g.closePath(); g.endFill();
+  if(h > 0) {
+    // Right face
+    g.beginFill(sideCol);
+    g.moveTo(x+TW/2, y-elev); g.lineTo(x, y+TH/2-elev); g.lineTo(x, y+TH/2); g.lineTo(x+TW/2, y);
+    g.closePath(); g.endFill();
+    // Left face
+    const darkSide = tileColor(sideCol, -20);
+    g.beginFill(darkSide);
+    g.moveTo(x-TW/2, y-elev); g.lineTo(x, y+TH/2-elev); g.lineTo(x, y+TH/2); g.lineTo(x-TW/2, y);
+    g.closePath(); g.endFill();
+  }
+}
+
+function drawWater(g, x, y) {
+  const t = Date.now()/2000;
+  g.beginFill(0x1a4a7a, 0.7);
+  g.moveTo(x, y-TH/2); g.lineTo(x+TW/2, y); g.lineTo(x, y+TH/2); g.lineTo(x-TW/2, y);
+  g.closePath(); g.endFill();
+  // Shimmer
+  g.beginFill(0x3a7aba, 0.15);
+  g.drawEllipse(x + Math.sin(t+x)*4, y + Math.cos(t+y)*2, 6, 3);
+  g.endFill();
+}
+
+// Trees
+function drawTree(g, x, y, type) {
+  if(type==='pine') {
+    // Trunk
+    g.beginFill(0x4a3020); g.drawRect(x-1.5, y-12, 3, 14); g.endFill();
+    // Layers
+    g.beginFill(0x1a4a18); g.drawPolygon([x-10,y-8, x+10,y-8, x,y-22]); g.endFill();
+    g.beginFill(0x1e5a1c); g.drawPolygon([x-8,y-14, x+8,y-14, x,y-26]); g.endFill();
+    g.beginFill(0x226a20); g.drawPolygon([x-6,y-20, x+6,y-20, x,y-30]); g.endFill();
+  } else {
+    // Deciduous
+    g.beginFill(0x5a3a20); g.drawRect(x-2, y-10, 4, 12); g.endFill();
+    g.beginFill(0x2a6a1e); g.drawCircle(x, y-16, 8); g.endFill();
+    g.beginFill(0x3a7a28, 0.6); g.drawCircle(x-4, y-14, 5); g.endFill();
+    g.beginFill(0x3a7a28, 0.6); g.drawCircle(x+4, y-13, 5); g.endFill();
+  }
+}
+
+// Rocks
+function drawRock(g, x, y, size) {
+  const s = size||1;
+  g.beginFill(0x7a7a7a);
+  g.drawPolygon([x-5*s,y+2, x-3*s,y-6*s, x+2*s,y-7*s, x+6*s,y-2*s, x+4*s,y+3, x-2*s,y+4]);
+  g.endFill();
+  g.beginFill(0x8a8a8a);
+  g.drawPolygon([x-3*s,y-6*s, x+2*s,y-7*s, x+1*s,y-4*s, x-2*s,y-4*s]);
+  g.endFill();
+}
+
+const heightMap = {};
+function buildTerrain() {
+  terrainLayer.removeChildren();
+  featureLayer.removeChildren();
+  const tg = new PIXI.Graphics();
+  const fg = new PIXI.Graphics();
+
+  Object.entries(REGIONS).forEach(([rid, cfg]) => {
+    const basePal = PALETTE[cfg.terrain] || PALETTE.plains;
+    const bx = cfg.cx*(CHUNK+GAP), by = cfg.cy*(CHUNK+GAP);
+
+    // Draw tiles back-to-front for proper overlap
+    for(let r=0; r<CHUNK; r++) {
+      for(let c=0; c<CHUNK; c++) {
+        const h = heightAt(cfg.terrain, r, c);
+        const key = `${bx+c},${by+r}`;
+        heightMap[key] = h;
+        const p = iso(bx+c, by+r);
+        const pal = getBlendedPalette(cfg.terrain, cfg.cx, cfg.cy, r, c);
+        const v = ((r*7+c*13)%9)-4;
+
+        if(h < 0) {
+          drawTile3D(tg, p.x, p.y, pal.dark, pal.side, 0);
+          drawWater(tg, p.x, p.y);
+        } else {
+          const tc = tileColor(pal.top, v*3);
+          const sc = tileColor(pal.side, v*2);
+          drawTile3D(tg, p.x, p.y, tc, sc, h);
+        }
+      }
+    }
+
+    // Features per region
+    for(let r=0; r<CHUNK; r++) {
+      for(let c=0; c<CHUNK; c++) {
+        const p = iso(bx+c, by+r);
+        const h = heightAt(cfg.terrain, r, c);
+        const elev = Math.max(0,h) * DEPTH;
+        const edge = r<1||c<1||r>=CHUNK-1||c>=CHUNK-1;
+        const innerZone = r>=2&&c>=2&&r<CHUNK-2&&c<CHUNK-2;
+
+        if(cfg.terrain==='forest' && !edge && (r+c)%2===0 && h>=0 && noise(r*.7,c*.9)>0.3) {
+          drawTree(fg, p.x, p.y-elev, (r+c)%5===0?'deciduous':'pine');
+        }
+        if(cfg.terrain==='mountain' && innerZone && (r*5+c*3)%6===0 && h>=0) {
+          drawRock(fg, p.x, p.y-elev, 1+noise(r,c)*0.8);
+        }
+        if(cfg.terrain==='valley' && !edge && (r+c)%4===0 && h>=0 && c<8) {
+          drawTree(fg, p.x, p.y-elev, 'deciduous');
+        }
+        if(cfg.terrain==='marsh' && !edge && (r*2+c*3)%6===0 && h>=0) {
+          // Reeds
+          fg.lineStyle(1, 0x5a7a3a);
+          fg.moveTo(p.x-2, p.y-elev); fg.lineTo(p.x-3, p.y-elev-10);
+          fg.moveTo(p.x+1, p.y-elev); fg.lineTo(p.x+2, p.y-elev-12);
+          fg.moveTo(p.x+3, p.y-elev); fg.lineTo(p.x+1, p.y-elev-8);
+          fg.lineStyle(0);
+        }
+        if(cfg.terrain==='coastal' && !edge && (r+c*2)%7===0 && h>=0 && r<CHUNK-3) {
+          // Beach grass
+          fg.lineStyle(1, 0x8a9a4a);
+          fg.moveTo(p.x, p.y-elev); fg.lineTo(p.x-3, p.y-elev-8);
+          fg.moveTo(p.x+2, p.y-elev); fg.lineTo(p.x+4, p.y-elev-7);
+          fg.lineStyle(0);
+        }
+      }
+    }
+
+    // Region label
+    const cp = iso(bx+CHUNK/2, by+CHUNK/2);
+    const label = new PIXI.Text(rid.replace(/-/g,' '), {
+      fontFamily:'Courier New', fontSize:11, fill:0x484f58, fontStyle:'italic'
+    });
+    label.anchor.set(0.5); label.x=cp.x; label.y=cp.y+CHUNK*TH/2+16;
+    fg.addChild ? featureLayer.addChild(label) : 0;
+    featureLayer.addChild(label);
+  });
+
+  terrainLayer.addChild(tg);
+  featureLayer.addChild(fg);
+}
+// Initialize known regions
+['northern-forest','river-valley','mountain-pass','coastal-plains','salt-marshes'].forEach(rid => {
+  REGIONS[rid] = getRegionLayout(rid);
+});
+buildTerrain();
+
+// ═══════════════════════════════════════════════════════════════
+// CITIZENS
+// ═══════════════════════════════════════════════════════════════
+let worldData=null, colorMap={}, sel=null;
+const cGfx={}, cLabels={};
+
+const SLOTS = [
+  {r:5,c:5},{r:6,c:12},{r:12,c:6},{r:11,c:13},{r:8,c:9},
+  {r:7,c:3},{r:3,c:10},{r:13,c:15},{r:15,c:5},{r:5,c:16},
+  {r:9,c:14},{r:14,c:8},{r:4,c:7},{r:10,c:4},{r:16,c:10},
+];
+
+function drawCitizen(g, x, y, color, isSel, hp, maxHp, hasShelter, inventory) {
+  const t = Date.now()/1000;
+
+  // Shadow
+  g.beginFill(0x000000, 0.25);
+  g.drawEllipse(x, y+3, 7, 3.5);
+  g.endFill();
+
+  // Legs
+  g.lineStyle(2, tileColor(color, -40));
+  g.moveTo(x-3, y-2); g.lineTo(x-4, y+2);
+  g.moveTo(x+3, y-2); g.lineTo(x+4, y+2);
+  g.lineStyle(0);
+
+  // Body
+  g.beginFill(color);
+  g.drawRoundedRect(x-5, y-14, 10, 14, 3);
+  g.endFill();
+
+  // Head
+  g.beginFill(0xd4a574);
+  g.drawCircle(x, y-19, 5);
+  g.endFill();
+
+  // Eyes
+  g.beginFill(0x222222);
+  g.drawCircle(x-2, y-19, 1);
+  g.drawCircle(x+2, y-19, 1);
+  g.endFill();
+
+  // Selection glow
+  if(isSel) {
+    g.lineStyle(2, 0xffffff, 0.6 + Math.sin(t*3)*0.3);
+    g.drawCircle(x, y-8, 14);
+    g.lineStyle(0);
+  }
+
+  // HP bar
+  const hpPct = hp/(maxHp||10);
+  g.beginFill(0x0d1117, 0.7);
+  g.drawRoundedRect(x-10, y+6, 20, 3, 1);
+  g.endFill();
+  g.beginFill(hpPct>.6?0x3fb950:hpPct>.3?0xd29922:0xf85149);
+  g.drawRoundedRect(x-10, y+6, 20*hpPct, 3, 1);
+  g.endFill();
+
+  // Inventory indicators (small dots)
+  const items = Object.entries(inventory||{}).filter(([,v])=>v>0);
+  items.slice(0,4).forEach(([item,count], i) => {
+    const itemColor = item==='fish'?0x58a6ff : item==='stone'?0x8b949e : item==='wood'?0x8a6a3a : item==='herbs'?0x3fb950 : item==='grain'?0xf0c040 : 0xaaaaaa;
+    g.beginFill(itemColor);
+    g.drawCircle(x-6+i*4, y+12, 2);
+    g.endFill();
+  });
+
+  // Shelter indicator
+  if(hasShelter) {
+    g.beginFill(0xf0c040, 0.8);
+    g.drawPolygon([x+8,y-12, x+14,y-8, x+8,y-8]);
+    g.endFill();
+    g.beginFill(0x8a6a3a);
+    g.drawRect(x+9, y-8, 4, 5);
+    g.endFill();
+  }
+}
+
+// Resource piles near citizens
+function drawResourcePile(g, x, y, inventory) {
+  const items = Object.entries(inventory||{}).filter(([,v])=>v>0);
+  let ox = -12;
+  items.forEach(([item, count]) => {
+    const n = Math.min(count, 5);
+    if(item==='stone') {
+      for(let i=0;i<n;i++) {
+        g.beginFill(0x7a7a7a);
+        g.drawCircle(x+ox+i*4, y+16+Math.sin(i)*2, 2.5);
+        g.endFill();
+      }
+    } else if(item==='wood') {
+      for(let i=0;i<n;i++) {
+        g.beginFill(0x6a4a2a);
+        g.drawRect(x+ox+i*3-1, y+14+i%2, 4, 2);
+        g.endFill();
+      }
+    } else if(item==='fish') {
+      for(let i=0;i<n;i++) {
+        g.beginFill(0x4a8aba);
+        g.drawEllipse(x+ox+i*5, y+16, 3, 1.5);
+        g.endFill();
+      }
+    }
+    ox += n*5 + 4;
+  });
+}
+
+function updateCitizens(citizens) {
+  citizens.forEach((c,i) => { if(!colorMap[c.id]) colorMap[c.id]=CCOLORS[i%CCOLORS.length]; });
+  const buckets = {};
+  citizens.filter(c=>c.alive).forEach(c => { (buckets[c.region]=buckets[c.region]||[]).push(c); });
+
+  citizens.forEach(c => {
+    if(!c.alive) { if(cGfx[c.id]) cGfx[c.id].visible=false; if(cLabels[c.id]) cLabels[c.id].visible=false; return; }
+    const cfg = REGIONS[c.region]; if(!cfg) return;
+    const idx = (buckets[c.region]||[]).indexOf(c);
+    const slot = SLOTS[idx%SLOTS.length];
+    const bx = cfg.cx*(CHUNK+GAP)+slot.c, by = cfg.cy*(CHUNK+GAP)+slot.r;
+    const p = iso(bx,by);
+    const h = heightAt(cfg.terrain, slot.r, slot.c);
+    const elev = Math.max(0,h)*DEPTH;
+    const isSel = sel&&sel.id===c.id;
+    const bob = Math.sin(Date.now()/800+c.id.charCodeAt(0))*1.5;
+
+    if(!cGfx[c.id]) {
+      const g = new PIXI.Graphics();
+      g.eventMode='static'; g.cursor='pointer';
+      g.on('pointerdown', e => { e.stopPropagation(); if(!moved) selectCitizen(c.id); });
+      cGfx[c.id]=g; citizenLayer.addChild(g);
+      const l = new PIXI.Text(c.name, { fontFamily:'Courier New', fontSize:10, fill:0xe6edf3, stroke:0x0d1117, strokeThickness:3, fontWeight:'bold' });
+      l.anchor.set(0.5); cLabels[c.id]=l; citizenLayer.addChild(l);
+    }
+
+    const g = cGfx[c.id]; g.clear(); g.visible=true;
+    const cy = p.y - elev + bob;
+    drawCitizen(g, p.x, cy, colorMap[c.id], isSel, c.health, c.max_health, c.has_shelter, c.inventory);
+    drawResourcePile(g, p.x, cy, c.inventory);
+    g.hitArea = new PIXI.Circle(p.x, cy-8, 16);
+
+    const l = cLabels[c.id]; l.visible=true; l.x=p.x; l.y=cy-30+bob;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CITIZEN PANEL
+// ═══════════════════════════════════════════════════════════════
+function selectCitizen(id) {
+  if(!worldData) return;
+  const c = worldData.citizens.find(ci=>ci.id===id); if(!c) return;
+  sel = c;
+  document.getElementById('citizen-panel').style.display='block';
+  document.getElementById('event-log').style.display='none';
+  document.getElementById('cp-name').textContent=c.name+(c.alive?'':' 💀');
+  document.getElementById('cp-name').style.color='#'+(colorMap[c.id]||0xffffff).toString(16).padStart(6,'0');
+  const hp=c.health/(c.max_health||10);
+  const hf=document.getElementById('cp-hp');
+  hf.style.width=(hp*100)+'%'; hf.style.backgroundColor=hp>.6?'#3fb950':hp>.3?'#d29922':'#f85149';
+  document.getElementById('cp-hp-text').textContent=c.health+'/'+(c.max_health||10);
+  document.getElementById('cp-food').textContent=c.food+(c._starveTicks>0?' ⚠️ starving ('+c._starveTicks+')':'');
+  document.getElementById('cp-region').textContent=c.region.replace(/-/g,' ');
+  document.getElementById('cp-shelter').textContent=c.has_shelter?'🏠 Yes':'None';
+
+  const inv=Object.entries(c.inventory||{}).filter(([,v])=>v>0);
+  document.getElementById('cp-inv').innerHTML=inv.length ? inv.map(([k,v])=>`<div class="stat"><span class="label">${k}</span><span class="value">${v}</span></div>`).join('') : '<div class="stat"><span class="label">Empty</span></div>';
+
+  document.getElementById('cp-skills').innerHTML=Object.entries(c.skills||{}).map(([k,v])=>`<div class="stat"><span class="label">${k}</span><span class="value">${'██'.repeat(v)}${'░░'.repeat(5-v)} ${v}</span></div>`).join('');
+
+  const rels=Object.entries(c.relationships||{}).filter(([,v])=>v>0).sort((a,b)=>b[1]-a[1]);
+  document.getElementById('cp-rels').innerHTML=rels.length ? rels.map(([k,v])=>`<div class="rel-item">💕 ${k} — ${v}</div>`).join('') : '<div class="stat"><span class="label">No bonds yet</span></div>';
+
+  const mems=(c.memory||[]).slice(-20).reverse();
+  document.getElementById('cp-mems').innerHTML=mems.map(m => {
+    const t=typeof m==='string'?m:m.text, a=typeof m==='object'?m.action:null;
+    return `<div class="memory-item"><span class="memory-icon">${a?(ICONS[a]||'💭'):'💭'}</span>${t}</div>`;
+  }).join('');
+}
+
+function toggle(id) {
+  const el=document.getElementById(id), h3=el.previousElementSibling;
+  el.style.display=el.style.display==='none'?'block':'none';
+  h3.textContent=h3.textContent.replace(/[▸▾]/,el.style.display==='none'?'▸':'▾');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SEASON PARTICLES
+// ═══════════════════════════════════════════════════════════════
+const particles = [];
+let currentSeason = 'spring';
+const seasonCanvas = document.getElementById('season-overlay');
+const sctx = seasonCanvas.getContext('2d');
+
+function resizeSeasonCanvas() { seasonCanvas.width=window.innerWidth; seasonCanvas.height=window.innerHeight; }
+resizeSeasonCanvas();
+window.addEventListener('resize', resizeSeasonCanvas);
+
+function spawnParticle() {
+  if(currentSeason==='winter') {
+    particles.push({ x:Math.random()*window.innerWidth, y:-5, vx:Math.random()*0.5-0.25, vy:Math.random()*0.8+0.3, size:Math.random()*3+1, alpha:Math.random()*0.5+0.3, type:'snow' });
+  } else if(currentSeason==='autumn') {
+    particles.push({ x:Math.random()*window.innerWidth, y:-5, vx:Math.random()*1-0.5, vy:Math.random()*0.5+0.2, size:Math.random()*3+2, alpha:Math.random()*0.4+0.2, rot:Math.random()*Math.PI*2, vrot:Math.random()*0.02-0.01, type:'leaf' });
+  }
+}
+
+function updateParticles() {
+  sctx.clearRect(0,0,seasonCanvas.width,seasonCanvas.height);
+  if(currentSeason!=='winter'&&currentSeason!=='autumn') return;
+
+  if(particles.length<80 && Math.random()<0.3) spawnParticle();
+
+  for(let i=particles.length-1;i>=0;i--) {
+    const p=particles[i];
+    p.x+=p.vx; p.y+=p.vy;
+    if(p.y>window.innerHeight+10) { particles.splice(i,1); continue; }
+
+    sctx.globalAlpha=p.alpha;
+    if(p.type==='snow') {
+      sctx.fillStyle='#c8d8e8';
+      sctx.beginPath(); sctx.arc(p.x,p.y,p.size,0,Math.PI*2); sctx.fill();
+    } else if(p.type==='leaf') {
+      p.rot+=p.vrot;
+      sctx.save(); sctx.translate(p.x,p.y); sctx.rotate(p.rot);
+      sctx.fillStyle='#c87830';
+      sctx.fillRect(-p.size/2,-p.size/4,p.size,p.size/2);
+      sctx.restore();
+    }
+  }
+  sctx.globalAlpha=1;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// EVENTS
+// ═══════════════════════════════════════════════════════════════
+function updateEvents(events) {
+  const el=document.getElementById('events');
+  if(!events||!events.length) { el.innerHTML='<div class="event">Waiting for first tick...</div>'; return; }
+  el.innerHTML=events.slice(-15).reverse().map(e => `<div class="event">${ICONS[e.type]||'❓'} <span class="name">${e.citizenName||'?'}</span> <span class="action">${e.description||e.type}</span></div>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// DATA
+// ═══════════════════════════════════════════════════════════════
+let lastRegionCount = 0;
+
+async function fetchWorld() {
+  try {
+    const status = await(await fetch('/api/status')).json();
+    const citizens = await(await fetch('/api/citizens')).json();
+    // Fetch regions to detect new discoveries
+    let regionList = [];
+    try {
+      const worldRes = await(await fetch('/api/state')).json();
+      regionList = Object.values(worldRes.regions || {});
+    } catch(e) { console.warn('Failed to fetch regions:', e); }
+
+    // Build/update REGIONS map from API data
+    regionList.forEach(r => {
+      if (!REGIONS[r.id]) {
+        REGIONS[r.id] = getRegionLayout(r.id, r.terrain);
+      }
+    });
+
+    // Rebuild terrain if new regions discovered
+    if (regionList.length !== lastRegionCount) {
+      buildTerrain();
+      lastRegionCount = regionList.length;
+    }
+
+    let events=[];
+    if(status.tick>0) try { events=(await(await fetch('/api/history/'+status.tick)).json()).events||[]; } catch(e){}
+    worldData = { citizens, status };
+    currentSeason = status.season;
+
+    const seasonClass = 'season-'+status.season;
+    document.getElementById('clock').innerHTML=`Tick ${status.tick} | <span class="${seasonClass}">${status.season.charAt(0).toUpperCase()+status.season.slice(1)}</span> | Year ${status.year}`;
+    const alive=citizens.filter(c=>c.alive).length;
+    const regionCount = regionList.length;
+    document.getElementById('population').textContent=`Population: ${alive} alive, ${citizens.length-alive} dead | ${regionCount} regions`;
+
+    updateCitizens(citizens);
+    updateEvents(events);
+    if(sel) selectCitizen(sel.id);
+  } catch(e) { console.error(e); }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RENDER LOOP
+// ═══════════════════════════════════════════════════════════════
+let lastTerrainDraw = 0;
+app.ticker.add(() => {
+  // Redraw terrain periodically for water animation
+  if(Date.now()-lastTerrainDraw > 2000) { buildTerrain(); lastTerrainDraw=Date.now(); }
+  // Update citizen positions (bobbing)
+  if(worldData) updateCitizens(worldData.citizens);
+  updateParticles();
+});
+
+fetchWorld();
+setInterval(fetchWorld, 5000);
+window.addEventListener('resize', () => app.renderer.resize(window.innerWidth, window.innerHeight));
+</script>
+</body>
+</html>

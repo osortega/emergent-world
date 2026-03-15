@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width"><title>Debug</title></head>
+<body style="background:#111;color:#0f0;font-family:monospace;padding:20px;">
+<h2>Debug</h2>
+<pre id="log"></pre>
+<script>
+const log = document.getElementById('log');
+function l(msg) { log.textContent += msg + '\n'; }
+
+l('1. Page loaded');
+
+(async () => {
+  try {
+    l('2. Fetching /api/status...');
+    const s = await (await fetch('/api/status')).json();
+    l('   ✅ tick=' + s.tick + ' season=' + s.season);
+  } catch(e) { l('   ❌ ' + e.message); }
+
+  try {
+    l('3. Fetching /api/citizens...');
+    const c = await (await fetch('/api/citizens')).json();
+    l('   ✅ ' + c.length + ' citizens');
+  } catch(e) { l('   ❌ ' + e.message); }
+
+  try {
+    l('4. Fetching /api/state...');
+    const w = await (await fetch('/api/state')).json();
+    l('   ✅ ' + Object.keys(w.regions).length + ' regions');
+  } catch(e) { l('   ❌ ' + e.message); }
+
+  try {
+    l('5. Loading PIXI...');
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js';
+    script.onload = () => l('   ✅ PIXI loaded, version=' + PIXI.VERSION);
+    script.onerror = (e) => l('   ❌ PIXI failed to load');
+    document.head.appendChild(script);
+  } catch(e) { l('   ❌ ' + e.message); }
+})();
+</script>
+</body></html>
